@@ -27,7 +27,10 @@ public struct CoursePage: View {
                 if store.schedules.isEmpty && !store.isLoading {
                     emptyState
                 } else {
-                    WeekGridView(courses: store.schedules(forWeek: selectedWeek))
+                    WeekGridView(
+                        courses: store.schedules(forWeek: selectedWeek),
+                        weekStartDate: weekStartDate(for: selectedWeek)
+                    )
                 }
             }
             .navigationTitle("课表")
@@ -117,17 +120,29 @@ public struct CoursePage: View {
 
     /// 根据 Keychain 中缓存的 `beginDay` 估算当前周。
     private func computeCurrentWeek() {
-        let credStore = CredentialStore.shared
-        guard let beginDayMs = credStore.get(CredentialStore.Keys.tongjiCalendarBeginDayMs),
-              let ms = Double(beginDayMs) else {
-            return
-        }
-        let beginDate = Date(timeIntervalSince1970: ms / 1000.0)
+        guard let beginDate = semesterBeginDate() else { return }
         let secondsPerWeek: TimeInterval = 7 * 24 * 60 * 60
         let diff = Date().timeIntervalSince(beginDate)
         if diff > 0 {
             let week = Int(diff / secondsPerWeek) + 1
             selectedWeek = max(1, min(20, week))
         }
+    }
+
+    /// 学期第 1 周第 1 天的日期（同济教务系统 `beginDay` 字段，通常是周一）。
+    private func semesterBeginDate() -> Date? {
+        let credStore = CredentialStore.shared
+        guard let beginDayMs = credStore.get(CredentialStore.Keys.tongjiCalendarBeginDayMs),
+              let ms = Double(beginDayMs) else {
+            return nil
+        }
+        return Date(timeIntervalSince1970: ms / 1000.0)
+    }
+
+    /// 第 `week` 周周一的日期。
+    private func weekStartDate(for week: Int) -> Date? {
+        guard let beginDate = semesterBeginDate() else { return nil }
+        let calendar = Calendar(identifier: .gregorian)
+        return calendar.date(byAdding: .day, value: (week - 1) * 7, to: beginDate)
     }
 }
