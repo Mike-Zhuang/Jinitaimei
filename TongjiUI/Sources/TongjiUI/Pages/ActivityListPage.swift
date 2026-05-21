@@ -45,6 +45,7 @@ public struct ActivityListPage: View {
                         ActivityRow(activity: activity)
                     }
                     .buttonStyle(.plain)
+                    .activityListRowStyle()
                 }
                 if !store.isLoading {
                     if store.activities.isEmpty {
@@ -205,6 +206,21 @@ struct ActivityRow: View {
             }
         }
         .padding(.vertical, 4)
+    }
+}
+
+private extension View {
+    /// 活动列表行使用自绘分割线，避免系统 List 在 Button 行内按文本缩进导致左侧缺线。
+    func activityListRowStyle() -> some View {
+        self
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .listRowInsets(EdgeInsets())
+            .listRowSeparator(.hidden)
+            .overlay(alignment: .bottom) {
+                Divider()
+            }
     }
 }
 

@@ -271,10 +271,20 @@ private struct StarActivityCard: View {
                     }
                 }
             } else {
-                Text(campusModel.loggedIntoStar ? "正在等待星值同步" : "登录后同步星值")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("正在同步星值")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+
+                    Text(verbatim: "283 总星值")
+                        .font(.system(size: 24, weight: .bold, design: .rounded))
+                        .redacted(reason: .placeholder)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .task {

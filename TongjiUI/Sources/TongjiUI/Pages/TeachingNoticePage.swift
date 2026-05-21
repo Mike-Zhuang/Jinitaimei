@@ -65,6 +65,8 @@ public struct TeachingNoticePage: View {
                         }
                     }
                     .disabled(isLoading)
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
                 }
             }
         }
