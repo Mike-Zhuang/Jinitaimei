@@ -50,8 +50,12 @@
     <true/>
     <key>NSAppTransportSecurity</key>
     <dict>
-        <key>NSAllowsArbitraryLoads</key>
-        <false/>
+        <!--
+            同济一系统 SSO 登录完成后的回调 URL 是 http://1.tongji.edu.cn/ssologin?token=...
+            （明确是 http，不是 https），WKWebView 必须放行这一跳板，否则整个登录链路断在这里。
+        -->
+        <key>NSAllowsArbitraryLoadsInWebContent</key>
+        <true/>
         <key>NSExceptionDomains</key>
         <dict>
             <key>tongji.edu.cn</key>
@@ -59,6 +63,10 @@
                 <key>NSIncludesSubdomains</key>
                 <true/>
                 <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                <true/>
+                <key>NSExceptionMinimumTLSVersion</key>
+                <string>TLSv1.2</string>
+                <key>NSExceptionRequiresForwardSecrecy</key>
                 <false/>
             </dict>
         </dict>

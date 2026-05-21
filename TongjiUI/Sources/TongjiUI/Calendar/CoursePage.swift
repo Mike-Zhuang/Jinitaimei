@@ -10,8 +10,10 @@ import TongjiKit
 public struct CoursePage: View {
 
     @Environment(\.modelContext) private var modelContext
+    @ObservedObject private var campusModel = CampusModel.shared
     @StateObject private var store: CourseStore
     @State private var selectedWeek: Int = 1
+    @State private var showError = false
 
     public init(modelContext: ModelContext) {
         _store = StateObject(wrappedValue: CourseStore(modelContext: modelContext))
@@ -43,16 +45,30 @@ public struct CoursePage: View {
                     .disabled(store.isLoading)
                 }
             }
-            .alert("加载失败", isPresented: .constant(store.lastError != nil)) {
-                Button("好") { /* 由 store 内部消化 */ }
+            .alert("加载失败", isPresented: $showError) {
+                Button("好") { store.clearError() }
             } message: {
                 Text(store.lastError ?? "")
             }
+            .onChange(of: store.lastError) { _, newValue in
+                showError = (newValue != nil)
+            }
             .task {
+                // 未登录时不要触发网络同步，否则会因为缺凭证立刻报错，
+                // 报错 alert 会和登录页 fullScreenCover 抢 presentation 槽位，
+                // 直接把登录页挤掉。
+                guard campusModel.loggedIn else { return }
                 if store.schedules.isEmpty {
                     await store.sync()
                 }
                 computeCurrentWeek()
+            }
+            .onChange(of: campusModel.loggedIn) { _, isLogged in
+                // 登录完成后再触发一次同步
+                if isLogged && store.schedules.isEmpty {
+                    Task { await store.sync() }
+                    computeCurrentWeek()
+                }
             }
         }
     }

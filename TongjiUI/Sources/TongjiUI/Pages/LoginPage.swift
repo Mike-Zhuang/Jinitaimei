@@ -55,13 +55,13 @@ public struct LoginPage: View {
                 Text("请用学号 + 统一身份密码登录")
             case .extractingTongji:
                 ProgressView()
-                Text("正在获取一系统凭证…")
+                Text("登录成功，正在初始化课表…")
             case .capturingStarToken:
                 ProgressView()
                 Text("正在初始化卓越星…")
             case .finished:
                 Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
-                Text("登录成功")
+                Text("准备完成")
             case .failed(let msg):
                 Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
                 Text(msg)

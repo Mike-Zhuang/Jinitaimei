@@ -65,6 +65,10 @@ public final class CourseStore: ObservableObject {
         schedules.filter { $0.weekNumber == week }
     }
 
+    public func clearError() {
+        lastError = nil
+    }
+
     private func clearAll() throws {
         let descriptor = FetchDescriptor<CourseSchedule>()
         let all = try context.fetch(descriptor)

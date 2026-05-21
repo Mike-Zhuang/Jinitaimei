@@ -9,8 +9,10 @@ import TongjiKit
 /// 列表项 → Safari 详情。
 public struct ActivityListPage: View {
 
+    @ObservedObject private var campusModel = CampusModel.shared
     @StateObject private var store: ActivityStore
     @State private var presentedURL: IdentifiedURL?
+    @State private var showError = false
 
     public init(modelContext: ModelContext) {
         _store = StateObject(wrappedValue: ActivityStore(modelContext: modelContext))
@@ -57,14 +59,18 @@ public struct ActivityListPage: View {
             await store.sync()
         }
         .task {
+            guard campusModel.loggedIn else { return }
             if store.activities.isEmpty {
                 await store.sync()
             }
         }
-        .alert("加载失败", isPresented: .constant(store.lastError != nil)) {
-            Button("好") {}
+        .alert("加载失败", isPresented: $showError) {
+            Button("好") { store.clearError() }
         } message: {
             Text(store.lastError ?? "")
+        }
+        .onChange(of: store.lastError) { _, newValue in
+            showError = (newValue != nil)
         }
         .sheet(item: $presentedURL) { item in
             SafariView(url: item.url)

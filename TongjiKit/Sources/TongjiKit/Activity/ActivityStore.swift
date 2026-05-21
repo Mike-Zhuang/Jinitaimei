@@ -50,6 +50,10 @@ public final class ActivityStore: ObservableObject {
         }
     }
 
+    public func clearError() {
+        lastError = nil
+    }
+
     private func clearAll() throws {
         let descriptor = FetchDescriptor<CampusActivity>()
         let all = try context.fetch(descriptor)
