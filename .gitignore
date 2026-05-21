@@ -1,0 +1,73 @@
+# ─────────────── macOS ───────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+
+# ─────────────── Xcode ───────────────
+# 构建产物
+build/
+DerivedData/
+*.xcuserstate
+*.xcuserdatad/
+xcuserdata/
+*.moved-aside
+
+# Xcode 自动生成的工程内用户配置
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# 保留 shared scheme，忽略个人 scheme
+!*.xcodeproj/xcshareddata/
+!*.xcworkspace/xcshareddata/
+
+# Xcode 索引与运行时缓存
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+timeline.xctimeline
+playground.xcworkspace
+
+# ─────────────── XcodeGen ───────────────
+# project.yml 是 source of truth，.xcodeproj 由它生成。
+# 若希望仓库自包含可直接打开，可注释掉下一行。
+Jinitaimei.xcodeproj/
+
+# ─────────────── Swift Package Manager ───────────────
+.build/
+.swiftpm/
+Packages/
+Package.resolved
+*.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+
+# ─────────────── CocoaPods / Carthage（暂未使用，预防性忽略） ───────────────
+Pods/
+Carthage/Build/
+Carthage/Checkouts/
+
+# ─────────────── fastlane / CI（预防性忽略） ───────────────
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+fastlane/test_output
+
+# ─────────────── 编辑器 / IDE ───────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ─────────────── 凭证 / 密钥（绝不入库） ───────────────
+*.p12
+*.mobileprovision
+*.cer
+*.certSigningRequest
+ExportOptions.plist
+.env
+.env.*
+!.env.example
