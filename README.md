@@ -129,7 +129,7 @@ xcodebuild \
 
 - 复旦 DanXi（Flutter）：<https://github.com/DanXi-Dev/DanXi>
 - 复旦 DanXi-swift（SwiftUI）：<https://github.com/DanXi-Dev/DanXi-swift>
-- 同济 wish_drom（.NET MAUI 原型， [wish_drom](https://github.com/wyyyz1937365497/wish_drom)）
+- 同济 wish_drom（.NET MAUI 原型， [https://github.com/wyyyz1937365497/wish_drom](https://github.com/wyyyz1937365497/wish_drom)）
 
 > 本项目源代码均为重写而成，未直接复制上游代码。借鉴部分主要在：架构分层（DanXi-swift 的 `Fudan Kit` + `FudanUI` 双 Package 拆分）、信息架构（"校园服务首页 + 可点开列表"模式）、SwiftUI 视图组织与 WKWebView SSO 登录交互。
 
