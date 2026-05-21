@@ -48,6 +48,10 @@
     <string>UIStatusBarStyleDefault</string>
     <key>UIViewControllerBasedStatusBarAppearance</key>
     <true/>
+    <key>NSCalendarsWriteOnlyAccessUsageDescription</key>
+    <string>用于将课程表写入你选择的系统日历。</string>
+    <key>NSCalendarsUsageDescription</key>
+    <string>用于将课程表写入你选择的系统日历。</string>
     <key>NSAppTransportSecurity</key>
     <dict>
         <!--

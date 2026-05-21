@@ -12,6 +12,7 @@ public final class CampusModel: ObservableObject {
     @Published public private(set) var loggedIn: Bool = false
     @Published public private(set) var loggedIntoStar: Bool = false
     @Published public private(set) var uid: String?
+    @Published public private(set) var profile: TongjiUserProfile?
 
     private let store: CredentialStore
 
@@ -26,7 +27,18 @@ public final class CampusModel: ObservableObject {
         let hasUid = store.get(CredentialStore.Keys.tongjiUid) != nil
         self.loggedIn = hasCookie && hasUid
         self.uid = store.get(CredentialStore.Keys.tongjiUid)
+        self.profile = TongjiUserProfile.load(from: store)
         self.loggedIntoStar = store.get(CredentialStore.Keys.starBearerToken) != nil
+    }
+
+    /// 从一系统刷新个人资料。
+    public func refreshProfile() async {
+        do {
+            profile = try await SessionAPI(store: store).refreshSessionUser()
+            refresh()
+        } catch {
+            refresh()
+        }
     }
 
     /// 退出登录，清空所有凭证。

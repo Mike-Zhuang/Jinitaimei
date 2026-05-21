@@ -212,6 +212,14 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
             log("  studentCode 加密失败: \(error)")
             return false
         }
+
+        do {
+            _ = try await SessionAPI(store: store).refreshSessionUser()
+            log("  个人信息已拉取并存储")
+        } catch {
+            // 个人信息用于设置页展示，失败不应阻断已完成的一系统登录。
+            log("  个人信息拉取失败: \(error)")
+        }
         return true
     }
 

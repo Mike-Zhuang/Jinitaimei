@@ -2,7 +2,7 @@ import SwiftUI
 import SwiftData
 import TongjiKit
 
-/// App 根视图：两个 Tab + 未登录拦截。
+/// App 根视图：日程、校园与设置三个 Tab。
 ///
 /// 实测发现卓越星 H5 端的活动浏览接口（`/api/app-api/activity/index/list` 等）
 /// 是 **公开接口**，无需 Bearer Token；因此不再做后台 token 抓取。
@@ -10,7 +10,6 @@ import TongjiKit
 public struct RootView: View {
 
     @StateObject private var campusModel = CampusModel.shared
-    @State private var showLogin = false
 
     public init() {}
 
@@ -25,18 +24,14 @@ public struct RootView: View {
                 .tabItem {
                     Label("校园", systemImage: "building.columns")
                 }
+
+            SettingsPage()
+                .tabItem {
+                    Label("设置", systemImage: "gearshape")
+                }
         }
         .task {
             campusModel.refresh()
-            if !campusModel.loggedIn {
-                showLogin = true
-            }
-        }
-        .fullScreenCover(isPresented: $showLogin) {
-            LoginPage(onFinished: {
-                showLogin = false
-                campusModel.refresh()
-            })
         }
     }
 }

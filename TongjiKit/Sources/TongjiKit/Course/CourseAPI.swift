@@ -40,11 +40,9 @@ public final class CourseAPI {
             throw AuthError.expired("缺少 studentCode，请重新登录以获取加密参数")
         }
 
-        // calendarId
-        var calendarId = store.get(CredentialStore.Keys.tongjiCalendarId)
-        if calendarId == nil || calendarId?.isEmpty == true {
-            calendarId = try await fetchCalendarId(cookie: cookie, sessionId: sessionId)
-        }
+        // 每次同步课表前刷新校历元数据，避免周数边界停留在旧缓存。
+        let calendarId = try await fetchCalendarId(cookie: cookie, sessionId: sessionId)
+            ?? store.get(CredentialStore.Keys.tongjiCalendarId)
 
         let timestamp = Int(Date().timeIntervalSince1970 * 1000)
         let calendarParam = (calendarId ?? "").addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
@@ -94,11 +92,29 @@ public final class CourseAPI {
         if let beginDay = JSONUtils.extractNestedField(json, path: ["data", "schoolCalendar", "beginDay"]) {
             store.set(beginDay, for: CredentialStore.Keys.tongjiCalendarBeginDayMs)
         }
+        if let endDay = JSONUtils.extractNestedField(json, path: ["data", "schoolCalendar", "endDay"]) {
+            store.set(endDay, for: CredentialStore.Keys.tongjiCalendarEndDayMs)
+        }
+        if let weekNum = JSONUtils.extractNestedField(json, path: ["data", "schoolCalendar", "weekNum"]) {
+            store.set(weekNum, for: CredentialStore.Keys.tongjiCalendarWeekNum)
+        }
+        if let week = JSONUtils.extractNestedField(json, path: ["data", "week"]) {
+            store.set(week, for: CredentialStore.Keys.tongjiCalendarCurrentWeek)
+        }
+        if let simpleName = JSONUtils.extractNestedField(json, path: ["data", "simpleName"]) {
+            store.set(simpleName, for: CredentialStore.Keys.tongjiCalendarSimpleName)
+        }
         if let s = JSONUtils.extractNestedField(json, path: ["data", "schoolCalendar", "teachingWeekStart"]) {
             store.set(s, for: CredentialStore.Keys.tongjiTeachingWeekStart)
         }
         if let s = JSONUtils.extractNestedField(json, path: ["data", "schoolCalendar", "teachingWeekEnd"]) {
             store.set(s, for: CredentialStore.Keys.tongjiTeachingWeekEnd)
+        }
+        if let s = JSONUtils.extractNestedField(json, path: ["data", "schoolCalendar", "examWeekStart"]) {
+            store.set(s, for: CredentialStore.Keys.tongjiExamWeekStart)
+        }
+        if let s = JSONUtils.extractNestedField(json, path: ["data", "schoolCalendar", "examWeekEnd"]) {
+            store.set(s, for: CredentialStore.Keys.tongjiExamWeekEnd)
         }
     }
 
