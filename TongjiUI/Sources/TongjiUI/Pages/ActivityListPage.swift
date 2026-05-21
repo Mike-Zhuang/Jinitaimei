@@ -49,7 +49,7 @@ public struct ActivityListPage: View {
                     ContentUnavailableView(
                         "没有匹配活动",
                         systemImage: "line.3.horizontal.decrease.circle",
-                        description: Text("请调整星星种类、星值或排序条件")
+                        description: Text("请调整星星种类、星值、活动状态或排序条件")
                     )
                 }
             }
@@ -121,8 +121,9 @@ public struct ActivityListPage: View {
             }
         }
         if filterState.minimumPoints > 0 {
-            result = result.filter { $0.starPoints >= filterState.minimumPoints }
+            result = result.filter { Int($0.starPoints.rounded()) >= filterState.minimumPoints }
         }
+        result = result.filter { filterState.selectedStatuses.contains(ActivityStatusFilter.status(for: $0)) }
         switch filterState.sortOption {
         case .dateDescending:
             return result.sorted { $0.activityDate > $1.activityDate }
@@ -173,6 +174,7 @@ struct ActivityRow: View {
                 if activity.starPoints > 0 {
                     Text("\(StarScoreSummary.formatScore(activity.starPoints)) 星")
                 }
+                Text(ActivityStatusFilter.status(for: activity).title)
             }
             .font(.caption2)
             .foregroundColor(.orange)
@@ -204,17 +206,69 @@ private enum ActivitySortOption: String, CaseIterable, Identifiable {
     }
 }
 
+private enum ActivityStatusFilter: String, CaseIterable, Identifiable {
+    case registrationOpen
+    case activityOngoing
+    case notStarted
+    case signInOngoing
+    case ended
+    case unknown
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .registrationOpen: "报名进行中"
+        case .activityOngoing: "活动进行中"
+        case .notStarted: "活动未开始"
+        case .signInOngoing: "签到中"
+        case .ended: "活动已结束"
+        case .unknown: "其他状态"
+        }
+    }
+
+    static let defaultSelection: Set<ActivityStatusFilter> = [
+        .registrationOpen,
+        .activityOngoing,
+        .notStarted,
+        .signInOngoing,
+        .unknown
+    ]
+
+    static func status(for activity: CampusActivity, now: Date = Date()) -> ActivityStatusFilter {
+        if let progressName = activity.progressName {
+            if progressName.contains("报名") && progressName.contains("进行") { return .registrationOpen }
+            if progressName.contains("签到") && progressName.contains("进行") { return .signInOngoing }
+            if progressName.contains("活动") && progressName.contains("进行") { return .activityOngoing }
+            if progressName.contains("未开始") { return .notStarted }
+            if progressName.contains("评价") || progressName.contains("结束") { return .ended }
+        }
+        if let endDate = activity.activityEndDate, endDate < now {
+            return .ended
+        }
+        if activity.activityDate > now {
+            return .notStarted
+        }
+        return .unknown
+    }
+}
+
 private struct ActivityFilterState: Equatable {
     var selectedModuleCodes: Set<String> = []
-    var minimumPoints: Double = 0
+    var selectedStatuses: Set<ActivityStatusFilter> = ActivityStatusFilter.defaultSelection
+    var minimumPoints: Int = 0
     var sortOption: ActivitySortOption = .dateDescending
 
     var isActive: Bool {
-        !selectedModuleCodes.isEmpty || minimumPoints > 0 || sortOption != .dateDescending
+        !selectedModuleCodes.isEmpty ||
+        selectedStatuses != ActivityStatusFilter.defaultSelection ||
+        minimumPoints > 0 ||
+        sortOption != .dateDescending
     }
 
     mutating func reset() {
         selectedModuleCodes = []
+        selectedStatuses = ActivityStatusFilter.defaultSelection
         minimumPoints = 0
         sortOption = .dateDescending
     }
@@ -253,11 +307,32 @@ private struct ActivityFilterSheet: View {
                 }
 
                 Section("最低星值") {
-                    Stepper(value: $filterState.minimumPoints, in: 0...20, step: 0.5) {
+                    Stepper(value: $filterState.minimumPoints, in: 0...20, step: 1) {
                         LabeledContent("星星数量 ≥") {
-                            Text(filterState.minimumPoints == 0 ? "不限" : StarScoreSummary.formatScore(filterState.minimumPoints))
+                            Text(filterState.minimumPoints == 0 ? "不限" : "\(filterState.minimumPoints)")
                         }
                     }
+                }
+
+                Section {
+                    ForEach(ActivityStatusFilter.allCases) { status in
+                        Button {
+                            toggleStatus(status)
+                        } label: {
+                            HStack {
+                                Text(status.title)
+                                    .foregroundColor(.primary)
+                                Spacer()
+                                if filterState.selectedStatuses.contains(status) {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                } header: {
+                    Text("活动状态")
+                } footer: {
+                    Text("默认隐藏已结束活动；需要查看历史活动时可勾选“活动已结束”。")
                 }
 
                 Section("排序") {
@@ -292,6 +367,14 @@ private struct ActivityFilterSheet: View {
             filterState.selectedModuleCodes.remove(code)
         } else {
             filterState.selectedModuleCodes.insert(code)
+        }
+    }
+
+    private func toggleStatus(_ status: ActivityStatusFilter) {
+        if filterState.selectedStatuses.contains(status) {
+            filterState.selectedStatuses.remove(status)
+        } else {
+            filterState.selectedStatuses.insert(status)
         }
     }
 }

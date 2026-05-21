@@ -9,9 +9,12 @@ public final class CampusActivity {
     public var title: String = ""
     public var source: String = "STAR平台"
     public var activityDate: Date = Date.distantPast
+    public var activityEndDate: Date?
     public var location: String?
     public var link: String?
     public var descriptionText: String?
+    public var progressValue: Int?
+    public var progressName: String?
     /// STAR 模块代码，如 `hongwen` / `mingde` / `shizhi` / `qiusuo` / `lixing`。
     public var moduleCode: String?
     public var moduleName: String?
@@ -24,9 +27,12 @@ public final class CampusActivity {
         title: String,
         source: String,
         activityDate: Date,
+        activityEndDate: Date?,
         location: String?,
         link: String?,
         descriptionText: String?,
+        progressValue: Int?,
+        progressName: String?,
         moduleCode: String?,
         moduleName: String?,
         starPoints: Double,
@@ -36,9 +42,12 @@ public final class CampusActivity {
         self.title = title
         self.source = source
         self.activityDate = activityDate
+        self.activityEndDate = activityEndDate
         self.location = location
         self.link = link
         self.descriptionText = descriptionText
+        self.progressValue = progressValue
+        self.progressName = progressName
         self.moduleCode = moduleCode
         self.moduleName = moduleName
         self.starPoints = starPoints

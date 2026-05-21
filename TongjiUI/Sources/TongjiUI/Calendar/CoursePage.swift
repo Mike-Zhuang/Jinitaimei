@@ -112,16 +112,24 @@ public struct CoursePage: View {
                 clampSelectedWeek()
             }
             .task {
+                computeCurrentWeek()
                 guard campusModel.loggedIn else { return }
+                await refreshCalendarMetadataIfNeeded()
                 if store.schedules.isEmpty {
                     await store.sync()
                 }
                 computeCurrentWeek()
             }
             .onChange(of: campusModel.loggedIn) { _, isLogged in
-                if isLogged && store.schedules.isEmpty {
-                    Task { await store.sync() }
-                    computeCurrentWeek()
+                computeCurrentWeek()
+                if isLogged {
+                    Task {
+                        await refreshCalendarMetadataIfNeeded()
+                        if store.schedules.isEmpty {
+                            await store.sync()
+                        }
+                        computeCurrentWeek()
+                    }
                 }
             }
         }
@@ -169,20 +177,43 @@ public struct CoursePage: View {
         CredentialStore.shared.get(CredentialStore.Keys.tongjiCalendarSimpleName)
     }
 
-    /// 优先使用服务端当前周；没有缓存时再根据 `beginDay` 估算。
+    /// 当前周按本机日期和缓存的学期开始日计算。
+    ///
+    /// 一系统返回的 `week` 只代表抓取当刻的当前周，不适合作为长期缓存；
+    /// 学期边界缓存下来后，每次进入日程页都用系统日期即时换算，避免长期固定在旧周次。
     private func computeCurrentWeek() {
-        if let weekText = CredentialStore.shared.get(CredentialStore.Keys.tongjiCalendarCurrentWeek),
-           let week = Int(weekText), week > 0 {
-            selectedWeek = max(weekRange.lowerBound, min(weekRange.upperBound, week))
-            return
-        }
         guard let beginDate = semesterBeginDate() else { return }
         let secondsPerWeek: TimeInterval = 7 * 24 * 60 * 60
         let diff = Date().timeIntervalSince(beginDate)
-        if diff > 0 {
-            let week = Int(diff / secondsPerWeek) + 1
-            selectedWeek = max(weekRange.lowerBound, min(weekRange.upperBound, week))
+        let week = diff >= 0 ? Int(diff / secondsPerWeek) + 1 : 1
+        selectedWeek = max(weekRange.lowerBound, min(weekRange.upperBound, week))
+    }
+
+    @MainActor
+    private func refreshCalendarMetadataIfNeeded() async {
+        guard needsCalendarMetadataRefresh() else {
+            return
         }
+        do {
+            try await CourseAPI().refreshCalendarMetadata()
+        } catch {
+            print("[Course] 校历元数据刷新失败: \(error)")
+        }
+    }
+
+    private func needsCalendarMetadataRefresh() -> Bool {
+        let credStore = CredentialStore.shared
+        guard semesterBeginDate() != nil,
+              credStore.get(CredentialStore.Keys.tongjiCalendarId)?.isEmpty == false,
+              let weekNumText = credStore.get(CredentialStore.Keys.tongjiCalendarWeekNum),
+              Int(weekNumText) != nil else {
+            return true
+        }
+        guard let endDayMs = credStore.get(CredentialStore.Keys.tongjiCalendarEndDayMs),
+              let ms = Double(endDayMs) else {
+            return false
+        }
+        return Date().timeIntervalSince1970 * 1000 > ms
     }
 
     private func semesterBeginDate() -> Date? {

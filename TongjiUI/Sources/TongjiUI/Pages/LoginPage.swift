@@ -21,7 +21,7 @@ public struct LoginPage: View {
                 statusBar
                 ZStack {
                     WebViewContainer(webView: coordinator.webView)
-                    if case .extractingTongji = coordinator.stage {
+                    if coordinator.isExtracting {
                         loadingOverlay
                     }
                 }
@@ -61,7 +61,7 @@ public struct LoginPage: View {
                 Text("登录成功，正在保存身份信息…")
             case .extractingStar:
                 ProgressView()
-                Text("正在同步卓越星信息…")
+                Text("正在后台同步卓越星信息…")
             case .finished:
                 Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
                 Text("准备完成")
@@ -80,14 +80,38 @@ public struct LoginPage: View {
     /// 抽取阶段把 WebView 盖住，避免用户看见 SPA 在乱跳。
     private var loadingOverlay: some View {
         ZStack {
-            Color(.systemBackground).opacity(0.95)
+            Color(.systemBackground)
             VStack(spacing: 16) {
                 ProgressView()
                     .scaleEffect(1.4)
-                Text("登录成功，正在保存身份信息…")
+                Text(coordinator.stage.extractingMessage)
                     .font(.subheadline)
                     .foregroundColor(.secondary)
             }
+        }
+    }
+}
+
+private extension TongjiAuthCoordinator.Stage {
+    var extractingMessage: String {
+        switch self {
+        case .extractingTongji:
+            return "登录成功，正在保存身份信息…"
+        case .extractingStar:
+            return "正在后台同步卓越星信息…"
+        default:
+            return ""
+        }
+    }
+}
+
+private extension TongjiAuthCoordinator {
+    var isExtracting: Bool {
+        switch stage {
+        case .extractingTongji, .extractingStar:
+            return true
+        default:
+            return false
         }
     }
 }

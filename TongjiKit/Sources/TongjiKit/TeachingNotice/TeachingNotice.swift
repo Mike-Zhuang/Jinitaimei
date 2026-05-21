@@ -1,7 +1,7 @@
 import Foundation
 
 /// 教学管理信息系统通知公告摘要。
-public struct TeachingNotice: Identifiable, Codable, Equatable {
+public struct TeachingNotice: Identifiable, Codable, Equatable, Hashable {
     public let id: Int
     public let title: String
     public let publishTimeText: String

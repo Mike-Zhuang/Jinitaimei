@@ -40,9 +40,13 @@ public final class CourseAPI {
             throw AuthError.expired("缺少 studentCode，请重新登录以获取加密参数")
         }
 
-        // 每次同步课表前刷新校历元数据，避免周数边界停留在旧缓存。
-        let calendarId = try await fetchCalendarId(cookie: cookie, sessionId: sessionId)
-            ?? store.get(CredentialStore.Keys.tongjiCalendarId)
+        // 校历只描述“第几周对应哪一周日期”，同一学期内不需要每次同步都请求。
+        // 当缓存缺失或本机日期已经超过缓存学期边界时，再向一系统刷新。
+        var calendarId = cachedCalendarIdIfUsable()
+        if calendarId == nil {
+            calendarId = try await fetchCalendarId(cookie: cookie, sessionId: sessionId)
+                ?? store.get(CredentialStore.Keys.tongjiCalendarId)
+        }
 
         let timestamp = Int(Date().timeIntervalSince1970 * 1000)
         let calendarParam = (calendarId ?? "").addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
@@ -62,6 +66,15 @@ public final class CourseAPI {
             throw AuthError.loginFlowFailed("课表响应解码失败")
         }
         return str
+    }
+
+    /// 拉取当前学期 calendarId 并缓存元数据。
+    public func refreshCalendarMetadata() async throws {
+        guard let cookie = store.get(CredentialStore.Keys.tongjiCookies), !cookie.isEmpty else {
+            throw AuthError.notLoggedIn("未找到登录凭证，请先完成登录")
+        }
+        let sessionId = store.get(CredentialStore.Keys.tongjiSessionId) ?? ""
+        _ = try await fetchCalendarId(cookie: cookie, sessionId: sessionId)
     }
 
     /// 拉取当前学期 calendarId 并缓存元数据。
@@ -116,6 +129,25 @@ public final class CourseAPI {
         if let s = JSONUtils.extractNestedField(json, path: ["data", "schoolCalendar", "examWeekEnd"]) {
             store.set(s, for: CredentialStore.Keys.tongjiExamWeekEnd)
         }
+    }
+
+    private func cachedCalendarIdIfUsable() -> String? {
+        guard let calendarId = store.get(CredentialStore.Keys.tongjiCalendarId),
+              !calendarId.isEmpty,
+              let beginDayText = store.get(CredentialStore.Keys.tongjiCalendarBeginDayMs),
+              Double(beginDayText) != nil,
+              let weekNumText = store.get(CredentialStore.Keys.tongjiCalendarWeekNum),
+              Int(weekNumText) != nil else {
+            return nil
+        }
+
+        guard let endDayText = store.get(CredentialStore.Keys.tongjiCalendarEndDayMs),
+              let endDayMs = Double(endDayText) else {
+            return calendarId
+        }
+
+        let nowMs = Date().timeIntervalSince1970 * 1000
+        return nowMs <= endDayMs ? calendarId : nil
     }
 
     private func reEncryptStudentCode() throws -> String? {

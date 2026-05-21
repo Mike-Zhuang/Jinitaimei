@@ -8,14 +8,18 @@
 
 | Tab | 功能 | 数据来源 | 状态 |
 |-----|------|---------|------|
-| 日程 | 周课表查看（按周切换、点击节次看详情） | 一系统 `1.tongji.edu.cn` `findStudentTimetab` | v0.1 可用 |
-| 校园 | 卓越星活动列表（点击跳官方详情页） | STAR 平台 `star.tongji.edu.cn` `/api/app-api/activity/index/list` | v0.1 可用 |
+| 日程 | 周课表查看（按周切换、点击节次看详情、导出到系统日历） | 一系统 `1.tongji.edu.cn` `findStudentTimetab` + `currentTermCalendar` | v0.1 可用 |
+| 校园 | 卓越星活动列表、筛选排序、个人星值摘要 | STAR 平台 `star.tongji.edu.cn` | v0.1 可用 |
+| 校园 | 教学管理信息系统通知公告（列表、详情、置顶服务卡片） | 一系统 `1.tongji.edu.cn` `commonMsgPublish` | v0.1 可用 |
+| 设置 | 校园账户登录、账户信息、退出登录 | 同济统一身份认证 + 一系统 session 用户信息 | v0.1 可用 |
 
-登录方式：**仅同济统一身份认证（iam/ids.tongji.edu.cn）**。用户在登录页 WebView 内完成一次 SSO 后，App 在后台依次跳转 `1.tongji.edu.cn/workbench` 与 `star.tongji.edu.cn`，复用 SSO Cookie 自动完成两边的凭证抓取（一系统：Cookie + sessionid + 加密 studentCode；STAR：Bearer Token）。后续访问课表与卓越星都不再需要重复登录。
+登录方式：**仅同济统一身份认证（iam/ids.tongji.edu.cn）**。用户从 `设置 → 校园账户` 进入登录页，在 WebView 内完成一次 SSO 后，App 会用同一个 WebView 在遮罩下后台完成凭证抓取与 STAR 同步，不再把中间跳转页面暴露给用户。一系统使用 Cookie + sessionid + 加密 studentCode；STAR 使用 Bearer Token。后续访问课表、教务通知与卓越星都不再需要重复登录。
+
+日程页的校历接口只用于缓存“本学期第几周对应哪一段日期”：`calendarId`、`beginDay`、`endDay`、`weekNum` 等。当前显示第几周由本机系统日期和缓存的 `beginDay` 即时计算，同一学期内不会每次进入日程页都请求校历接口。
 
 ## 暂未实现 / 不计划在 v0.1 实现
 
-> 已删除 / 不创建（参考 DanXi 但本项目不实现）：树洞社区、课评、AI 助手、教师日程、图书馆人数、食堂排队、巴士、电费、本科教务通知、运动数据、钱包、宿舍预约…… 后续按需独立 module 增量加入。
+> 已删除 / 不创建（参考 DanXi 但本项目不实现）：树洞社区、课评、AI 助手、教师日程、图书馆人数、食堂排队、巴士、电费、运动数据、钱包、宿舍预约…… 后续按需独立 module 增量加入。
 
 ## 项目结构
 
@@ -32,12 +36,14 @@ Jinitaimei/
 │       ├── Authentication/    # SSO 登录协调器 / Keychain CredentialStore / studentCode AES-CBC
 │       ├── Course/            # 一系统课表 API + 解析 + SwiftData 仓储
 │       ├── Activity/          # STAR 活动 API + 解析 + SwiftData 仓储
+│       ├── TeachingNotice/    # 一系统通知公告 API + 模型
+│       ├── Profile/           # 一系统 session 用户信息
 │       ├── CampusModel.swift  # 全局登录态
 │       └── Util/              # JSON 等工具
 └── TongjiUI/                  # UI 层（本地 SPM Package，依赖 TongjiKit）
     └── Sources/TongjiUI/
         ├── Navigation/        # RootView（TabBar） / CampusHome（校园服务列表）
-        ├── Pages/             # LoginPage / ActivityListPage
+        ├── Pages/             # LoginPage / ActivityListPage / TeachingNoticePage / SettingsPage
         └── Calendar/          # CoursePage（周课表）
 ```
 
@@ -79,7 +85,7 @@ open Jinitaimei.xcodeproj
 1. 打开 `Jinitaimei.xcodeproj`。
 2. 顶部 scheme 选 **Jinitaimei**。
 3. 顶部 device 选择任意 iPhone 模拟器（例如 `iPhone 15` / `iPhone 15 Pro`，iOS 17.x）。
-4. `⌘R` 运行。首次启动会自动弹出 SSO 登录页，用学号 + 统一身份密码登录即可。
+4. `⌘R` 运行。首次启动不会自动弹出登录页；进入 `设置 → 校园账户` 后，用学号 + 统一身份密码登录即可。
 5. 模拟器内 WebView 调试：在 macOS Safari 菜单中开启 `开发 → 模拟器 → <你的 WebView>`，可像调试网页一样调试 SSO 流程。
 
 ### 用数据线在真机 iPhone 上调试

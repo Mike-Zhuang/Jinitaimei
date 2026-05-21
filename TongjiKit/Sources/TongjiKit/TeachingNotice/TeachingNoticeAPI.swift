@@ -76,12 +76,17 @@ public final class TeachingNoticeAPI {
         applyAuthHeaders(&request, cookie: cookie, sessionId: sessionId)
 
         let (data, response) = try await session.data(for: request)
+        if let http = response as? HTTPURLResponse {
+            print("[TeachingNotice] 详情响应 id=\(id) status=\(http.statusCode) bytes=\(data.count)")
+        }
         try ensureAuth(response: response)
 
         let payload = try JSONDecoder().decode(TeachingNoticeDetailResponse.self, from: data)
         guard payload.code == 200, let item = payload.data else {
             throw AuthError.loginFlowFailed(payload.msg.isEmpty ? "通知公告详情响应异常" : payload.msg)
         }
+        let contentLength = item.content?.count ?? 0
+        print("[TeachingNotice] 详情解析 id=\(id) titleLen=\(item.title.count) contentLen=\(contentLength)")
 
         return TeachingNoticeDetail(
             id: item.id,

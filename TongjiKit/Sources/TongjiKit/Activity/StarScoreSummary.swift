@@ -67,9 +67,6 @@ public extension StarScoreSummary {
     }
 
     static func formatScore(_ value: Double) -> String {
-        if value.rounded() == value {
-            return String(Int(value))
-        }
-        return String(format: "%.1f", value)
+        String(Int(value.rounded()))
     }
 }

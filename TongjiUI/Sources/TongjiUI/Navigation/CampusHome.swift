@@ -23,6 +23,8 @@ public struct CampusHome: View {
                                 service.destination
                             } label: {
                                 service.card
+                                    .tint(.primary)
+                                    .frame(height: 85, alignment: .center)
                             }
                             .swipeActions {
                                 Button(role: .destructive) {
@@ -54,6 +56,7 @@ public struct CampusHome: View {
                 }
             }
             .listStyle(.insetGrouped)
+            .listSectionSpacing(.compact)
             .navigationTitle("校园服务")
             .toolbar {
                 Button("编辑") {
@@ -233,7 +236,7 @@ private struct StarActivityCard: View {
     @ObservedObject private var campusModel = CampusModel.shared
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 7) {
             HStack {
                 Label("卓越星", systemImage: "star.circle.fill")
                     .font(.callout)
@@ -245,14 +248,14 @@ private struct StarActivityCard: View {
             if let summary = campusModel.starScoreSummary {
                 HStack(alignment: .firstTextBaseline) {
                     Text(StarScoreSummary.formatScore(summary.totalScore))
-                        .font(.system(size: 26, weight: .bold, design: .rounded))
+                        .font(.system(size: 24, weight: .bold, design: .rounded))
                     Text("总星值")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     Spacer()
                 }
 
-                HStack(spacing: 10) {
+                HStack(spacing: 9) {
                     compactScore("弘", summary.hongwenScore)
                     compactScore("明", summary.mingdeScore)
                     compactScore("矢", summary.shizhiScore)
@@ -291,7 +294,7 @@ private struct TeachingNoticeCard: View {
     @State private var errorMessage: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 7) {
             HStack {
                 Label("教务通知", systemImage: "bell.fill")
                     .font(.callout)
@@ -309,7 +312,7 @@ private struct TeachingNoticeCard: View {
                     Text(latestNotice.title)
                         .font(.callout)
                         .foregroundColor(.primary)
-                        .lineLimit(3)
+                        .lineLimit(2)
                     Text(latestNotice.displayDate)
                         .font(.caption)
                         .foregroundColor(.secondary)

@@ -11,6 +11,7 @@ public struct TeachingNoticePage: View {
     @State private var total = 0
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var selectedNotice: TeachingNotice?
 
     public init() {}
 
@@ -24,11 +25,13 @@ public struct TeachingNoticePage: View {
                 )
             } else {
                 ForEach(notices) { notice in
-                    NavigationLink {
-                        TeachingNoticeDetailPage(notice: notice)
+                    Button {
+                        print("[TeachingNotice] 点击通知 id=\(notice.id) title=\(notice.title)")
+                        selectedNotice = notice
                     } label: {
                         TeachingNoticeRow(notice: notice)
                     }
+                    .buttonStyle(.plain)
                 }
 
                 if isLoading && notices.isEmpty {
@@ -66,6 +69,9 @@ public struct TeachingNoticePage: View {
         .listStyle(.plain)
         .navigationTitle("教学管理信息系统通知公告")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(item: $selectedNotice) { notice in
+            TeachingNoticeDetailPage(notice: notice)
+        }
         .toolbar {
             Button {
                 Task { await refresh() }
@@ -173,12 +179,23 @@ private struct TeachingNoticeDetailPage: View {
     @State private var detail: TeachingNoticeDetail?
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var didAppear = false
 
     var body: some View {
         Group {
             if let detail {
-                TeachingNoticeHTMLView(html: wrappedHTML(detail.contentHTML))
-                    .ignoresSafeArea(.container, edges: .bottom)
+                if detail.contentHTML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    ContentUnavailableView(
+                        "正文为空",
+                        systemImage: "doc.text.magnifyingglass",
+                        description: Text("接口已返回详情，但没有正文内容")
+                    )
+                } else {
+                    TeachingNoticeHTMLView(html: wrappedHTML(detail.contentHTML))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Color(.systemBackground))
+                        .ignoresSafeArea(.container, edges: .bottom)
+                }
             } else if isLoading {
                 ProgressView("正在加载通知正文…")
             } else if let errorMessage {
@@ -188,32 +205,52 @@ private struct TeachingNoticeDetailPage: View {
                     description: Text(errorMessage)
                 )
             } else {
-                EmptyView()
+                ProgressView("正在准备加载通知正文…")
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
         .navigationTitle(notice.title)
         .navigationBarTitleDisplayMode(.inline)
-        .task {
-            guard detail == nil, !isLoading else { return }
-            await loadDetail()
+        .onAppear {
+            guard !didAppear else { return }
+            didAppear = true
+            print("[TeachingNotice] 详情页出现 id=\(notice.id)")
+            Task { await loadDetailIfNeeded(trigger: "onAppear") }
+        }
+        .task(id: notice.id) {
+            await loadDetailIfNeeded(trigger: "task")
         }
         .toolbar {
             if detail == nil && !isLoading {
                 Button("重试") {
-                    Task { await loadDetail() }
+                    Task { await loadDetail(force: true, trigger: "retry") }
                 }
             }
         }
     }
 
-    private func loadDetail() async {
+    private func loadDetailIfNeeded(trigger: String) async {
+        guard detail == nil, !isLoading else { return }
+        await loadDetail(force: false, trigger: trigger)
+    }
+
+    private func loadDetail(force: Bool, trigger: String) async {
+        if force {
+            detail = nil
+            errorMessage = nil
+        }
+        guard detail == nil, !isLoading else { return }
+        print("[TeachingNotice] 开始加载详情 trigger=\(trigger) id=\(notice.id)")
         isLoading = true
         defer { isLoading = false }
         do {
             detail = try await TeachingNoticeAPI().fetchNoticeDetail(id: notice.id)
+            print("[TeachingNotice] 页面准备渲染 id=\(notice.id) htmlLen=\(detail?.contentHTML.count ?? 0)")
             errorMessage = nil
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+            print("[TeachingNotice] 正文加载失败 id=\(notice.id): \(error)")
         }
     }
 
@@ -260,18 +297,27 @@ private struct TeachingNoticeHTMLView: UIViewRepresentable {
         configuration.defaultWebpagePreferences.allowsContentJavaScript = false
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
+        webView.isOpaque = false
+        webView.backgroundColor = .systemBackground
+        webView.scrollView.backgroundColor = .systemBackground
         webView.scrollView.alwaysBounceVertical = true
-        webView.loadHTMLString(html, baseURL: URL(string: "https://1.tongji.edu.cn"))
         return webView
     }
 
-    func updateUIView(_ webView: WKWebView, context: Context) {}
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        guard context.coordinator.lastHTML != html else { return }
+        context.coordinator.lastHTML = html
+        print("[TeachingNotice] WebView loadHTML len=\(html.count)")
+        webView.loadHTMLString(html, baseURL: URL(string: "https://1.tongji.edu.cn"))
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
+        var lastHTML: String?
+
         func webView(
             _ webView: WKWebView,
             decidePolicyFor navigationAction: WKNavigationAction,
@@ -284,6 +330,18 @@ private struct TeachingNoticeHTMLView: UIViewRepresentable {
                 return
             }
             decisionHandler(.allow)
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            print("[TeachingNotice] WebView didFinish url=\(webView.url?.absoluteString ?? "about:blank")")
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            print("[TeachingNotice] WebView didFail: \(error)")
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            print("[TeachingNotice] WebView didFailProvisional: \(error)")
         }
     }
 }

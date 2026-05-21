@@ -24,6 +24,7 @@ public enum ActivityParser {
 
             let remoteId = long(obj, "id") ?? 0
             let date = timestampToDate(obj, "activityStartTime") ?? Date.distantPast
+            let endDate = timestampToDate(obj, "activityEndTime")
             let source = string(obj, "mainBoardUnit") ?? "STAR平台"
             let location = string(obj, "addr")
             let link = buildActivityLink(id: remoteId)
@@ -34,8 +35,10 @@ public enum ActivityParser {
             if let moduleName {
                 descParts.append(moduleName)
             }
-            if let progress = obj["progress"] as? [String: Any],
-               let progressName = progress["name"] as? String, !progressName.isEmpty {
+            let progress = obj["progress"] as? [String: Any]
+            let progressValue = progress.flatMap { int($0, "value") }
+            let progressName = progress.flatMap { string($0, "name") }
+            if let progressName, !progressName.isEmpty {
                 descParts.append(progressName)
             }
             let points = double(obj, "points") ?? 0
@@ -52,9 +55,12 @@ public enum ActivityParser {
                 title: title,
                 source: source,
                 activityDate: date,
+                activityEndDate: endDate,
                 location: location,
                 link: link,
                 descriptionText: description,
+                progressValue: progressValue,
+                progressName: progressName,
                 moduleCode: moduleCode,
                 moduleName: moduleName,
                 starPoints: points,
