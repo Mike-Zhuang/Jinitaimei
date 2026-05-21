@@ -4,9 +4,10 @@ import TongjiKit
 
 /// 日程 Tab 主页：按周展示同济课表。
 ///
-/// 渲染思路参考 DanXi-swift `FudanUI/Pages/CoursePage.swift`：
-/// - 顶部周次切换器（Picker / 滚动条）
-/// - 主体周视图：7 列 × 14 节
+/// 排版参考 DanXi-swift `FudanUI/Pages/CoursePage.swift`：
+/// - 标题"日程"（inline）+ 右上角刷新按钮
+/// - List 形态：第一个 Section 放周次 Stepper（第 N 周 - +）
+/// - 第二个 Section 放周视图（节次时间侧栏 + 7 列日期 + 课程块）
 public struct CoursePage: View {
 
     @Environment(\.modelContext) private var modelContext
@@ -15,25 +16,36 @@ public struct CoursePage: View {
     @State private var selectedWeek: Int = 1
     @State private var showError = false
 
+    private let weekRange = 1...25
+
     public init(modelContext: ModelContext) {
         _store = StateObject(wrappedValue: CourseStore(modelContext: modelContext))
     }
 
     public var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                weekPicker
-                Divider()
+            List {
                 if store.schedules.isEmpty && !store.isLoading {
                     emptyState
                 } else {
-                    WeekGridView(
-                        courses: store.schedules(forWeek: selectedWeek),
-                        weekStartDate: weekStartDate(for: selectedWeek)
-                    )
+                    Section {
+                        Stepper(value: $selectedWeek, in: weekRange) {
+                            Text("第 \(selectedWeek) 周")
+                        }
+                    }
+
+                    Section {
+                        WeekGridView(
+                            courses: store.schedules(forWeek: selectedWeek),
+                            weekStartDate: weekStartDate(for: selectedWeek)
+                        )
+                        .listRowInsets(EdgeInsets())
+                    }
                 }
             }
-            .navigationTitle("课表")
+            .listStyle(.inset)
+            .navigationTitle("日程")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -48,6 +60,9 @@ public struct CoursePage: View {
                     .disabled(store.isLoading)
                 }
             }
+            .refreshable {
+                await store.sync()
+            }
             .alert("加载失败", isPresented: $showError) {
                 Button("好") { store.clearError() }
             } message: {
@@ -57,9 +72,6 @@ public struct CoursePage: View {
                 showError = (newValue != nil)
             }
             .task {
-                // 未登录时不要触发网络同步，否则会因为缺凭证立刻报错，
-                // 报错 alert 会和登录页 fullScreenCover 抢 presentation 槽位，
-                // 直接把登录页挤掉。
                 guard campusModel.loggedIn else { return }
                 if store.schedules.isEmpty {
                     await store.sync()
@@ -67,7 +79,6 @@ public struct CoursePage: View {
                 computeCurrentWeek()
             }
             .onChange(of: campusModel.loggedIn) { _, isLogged in
-                // 登录完成后再触发一次同步
                 if isLogged && store.schedules.isEmpty {
                     Task { await store.sync() }
                     computeCurrentWeek()
@@ -76,35 +87,8 @@ public struct CoursePage: View {
         }
     }
 
-    private var weekPicker: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(1...20, id: \.self) { week in
-                    Button {
-                        selectedWeek = week
-                    } label: {
-                        Text("第\(week)周")
-                            .font(.subheadline)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(
-                                selectedWeek == week
-                                ? Color.accentColor.opacity(0.2)
-                                : Color(.secondarySystemBackground)
-                            )
-                            .foregroundColor(selectedWeek == week ? .accentColor : .primary)
-                            .clipShape(Capsule())
-                    }
-                }
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 8)
-        }
-    }
-
     private var emptyState: some View {
         VStack(spacing: 12) {
-            Spacer()
             Image(systemName: "calendar.badge.exclamationmark")
                 .font(.system(size: 48))
                 .foregroundColor(.secondary)
@@ -114,8 +98,10 @@ public struct CoursePage: View {
                 Task { await store.sync() }
             }
             .buttonStyle(.borderedProminent)
-            Spacer()
         }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 40)
+        .listRowBackground(Color.clear)
     }
 
     /// 根据 Keychain 中缓存的 `beginDay` 估算当前周。
@@ -125,11 +111,10 @@ public struct CoursePage: View {
         let diff = Date().timeIntervalSince(beginDate)
         if diff > 0 {
             let week = Int(diff / secondsPerWeek) + 1
-            selectedWeek = max(1, min(20, week))
+            selectedWeek = max(weekRange.lowerBound, min(weekRange.upperBound, week))
         }
     }
 
-    /// 学期第 1 周第 1 天的日期（同济教务系统 `beginDay` 字段，通常是周一）。
     private func semesterBeginDate() -> Date? {
         let credStore = CredentialStore.shared
         guard let beginDayMs = credStore.get(CredentialStore.Keys.tongjiCalendarBeginDayMs),
@@ -139,7 +124,6 @@ public struct CoursePage: View {
         return Date(timeIntervalSince1970: ms / 1000.0)
     }
 
-    /// 第 `week` 周周一的日期。
     private func weekStartDate(for week: Int) -> Date? {
         guard let beginDate = semesterBeginDate() else { return nil }
         let calendar = Calendar(identifier: .gregorian)
