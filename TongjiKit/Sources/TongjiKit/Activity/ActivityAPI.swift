@@ -2,8 +2,11 @@ import Foundation
 
 /// 卓越星 STAR 平台 API 客户端。
 ///
-/// 移植自 wish_drom `StarActivityProvider.FetchDataAsync`：
-/// 分页拉取 `/api/app-api/activity/index/list`，每页 10 条，直到本页 < 10 条停止。
+/// 实测发现：H5 端 `/api/app-api/activity/index/list` 是 **公开接口**，无需鉴权。
+/// SPA 在 `star.tongji.edu.cn/app/` 上调用时不带 Authorization 头也能正常返回数据。
+/// 因此这里有 Bearer Token 就带上（兼容未来可能的接口收紧），没有则匿名调用。
+///
+/// 分页协议：每页 10 条，直到本页 < 10 条停止。
 public final class ActivityAPI {
 
     private let apiBase = URL(string: "https://star.tongji.edu.cn")!
@@ -18,9 +21,7 @@ public final class ActivityAPI {
 
     /// 拉取全部活动的原始 JSON 项目数组（每个元素是一条活动的 JSON 字符串）。
     public func fetchAllActivitiesRaw() async throws -> [String] {
-        guard let token = store.get(CredentialStore.Keys.starBearerToken), !token.isEmpty else {
-            throw AuthError.notLoggedIn("未找到 STAR 平台登录凭证，请先完成登录")
-        }
+        let token = store.get(CredentialStore.Keys.starBearerToken)
 
         var all: [String] = []
         var pageNo = 1
@@ -69,8 +70,10 @@ public final class ActivityAPI {
         return all
     }
 
-    private func applyAuthHeaders(_ request: inout URLRequest, token: String) {
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+    private func applyAuthHeaders(_ request: inout URLRequest, token: String?) {
+        if let token, !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
         request.setValue("h5", forHTTPHeaderField: "Platform")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue(

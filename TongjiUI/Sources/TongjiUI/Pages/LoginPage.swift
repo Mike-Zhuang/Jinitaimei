@@ -2,8 +2,8 @@ import SwiftUI
 import WebKit
 import TongjiKit
 
-/// 同济统一身份认证（SSO）登录页。只负责一系统登录；卓越星 Bearer Token 由
-/// `StarTokenCapturer` 在主界面后台抓取，不阻塞本页关闭。
+/// 同济统一身份认证（SSO）登录页。只负责一系统登录。
+/// 卓越星活动列表使用公开接口，无需额外鉴权。
 public struct LoginPage: View {
 
     @StateObject private var coordinator = TongjiAuthCoordinator()

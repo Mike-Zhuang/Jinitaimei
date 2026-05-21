@@ -64,6 +64,11 @@ public struct ActivityListPage: View {
                 await store.sync()
             }
         }
+        .onChange(of: campusModel.loggedIn) { _, newValue in
+            if newValue && store.activities.isEmpty {
+                Task { await store.sync() }
+            }
+        }
         .alert("加载失败", isPresented: $showError) {
             Button("好") { store.clearError() }
         } message: {
