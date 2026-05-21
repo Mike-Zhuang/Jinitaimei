@@ -1,17 +1,19 @@
 import SwiftUI
 import TongjiKit
 
-/// 周课表网格：7 列（周一~周日）× 12 节。
+/// 周课表网格：7 列（周一~周日）× 11 节。
 ///
-/// 视觉参考 DanXi-swift `FudanUI/Utils/CalendarFramework.swift`：
-/// - 左侧时间列：节次编号 + 起止时间（小字 secondary）
-/// - 顶部日期表头：日期 (M/d) + 周几缩写
-/// - 课程块：浅色填充（accent 0.2）+ 主色文字 + 左侧 3pt 色条
-/// - 课程跨节自然合并为一整块
+/// 排版规则（对齐 DanXi-swift `FudanUI/Pages/CoursePage.swift` 的 `ViewThatFits` 思路）：
+/// - 单天列宽 `dx` **固定**：每节高度 `dy` 也固定。
+/// - 整张网格放进横向 `ScrollView`：在 iPhone 上自然呈现"周一~周五完整 + 周六一小条"
+///   的效果（5.x 列宽度），左右滑动可看完周六、周日。
+/// - 左侧时间侧栏 **不参与横向滚动**，始终钉在最左侧。
+/// - 课程标题不加 `lineLimit`，根据单元格高度自动换行——长名字（如
+///   "普通物理(荣)"）会完整显示成两行。
 struct WeekGridView: View {
 
     let courses: [CourseSchedule]
-    /// 本周周一对应的真实日期，nil 时表头隐藏日期行
+    /// 本周周一对应的真实日期；nil 时表头隐藏日期行
     let weekStartDate: Date?
 
     private let periodCount = TongjiTimeSlot.list.count
@@ -19,48 +21,48 @@ struct WeekGridView: View {
 
     @ScaledMetric private var sidebarWidth: CGFloat = 44
     @ScaledMetric private var headerHeight: CGFloat = 44
-    @ScaledMetric private var rowHeight: CGFloat = 54
+    @ScaledMetric private var rowHeight: CGFloat = 60
+    /// 单日列宽：固定 68pt，配合 iPhone 主流宽度（≈ 393pt - 8pt padding - 44pt 侧栏 ≈ 333pt
+    /// 可视区 ≈ 4.9 列），刚好呈现"周一-周五完整 + 周六一小条"。
+    @ScaledMetric private var dayWidth: CGFloat = 68
 
     @State private var detailCourse: CourseSchedule?
 
     var body: some View {
-        ScrollView {
-            HStack(alignment: .top, spacing: 0) {
-                TimeslotsSidebar(
-                    headerHeight: headerHeight,
-                    rowHeight: rowHeight,
-                    width: sidebarWidth
-                )
+        HStack(alignment: .top, spacing: 0) {
+            TimeslotsSidebar(
+                headerHeight: headerHeight,
+                rowHeight: rowHeight,
+                width: sidebarWidth
+            )
 
-                GeometryReader { geo in
-                    let dx = max(20, geo.size.width / CGFloat(dayCount))
-                    VStack(alignment: .leading, spacing: 0) {
-                        DateHeader(
-                            weekStartDate: weekStartDate,
-                            dx: dx,
-                            height: headerHeight
-                        )
-                        CalendarEvents(
-                            courses: uniqueCourses,
-                            dx: dx,
-                            dy: rowHeight,
-                            periodCount: periodCount,
-                            onTap: { detailCourse = $0 }
-                        )
-                    }
+            ScrollView(.horizontal, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    DateHeader(
+                        weekStartDate: weekStartDate,
+                        dx: dayWidth,
+                        height: headerHeight
+                    )
+                    CalendarEvents(
+                        courses: uniqueCourses,
+                        dx: dayWidth,
+                        dy: rowHeight,
+                        periodCount: periodCount,
+                        onTap: { detailCourse = $0 }
+                    )
                 }
-                .frame(height: headerHeight + CGFloat(periodCount) * rowHeight)
+                .frame(width: CGFloat(dayCount) * dayWidth, alignment: .topLeading)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
         }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 4)
         .sheet(item: $detailCourse) { course in
             CourseDetailSheet(course: course)
                 .presentationDetents([.medium, .large])
         }
     }
 
-    /// 同一周 + 同一天 + 同一门课 + 同一时段在 SwiftData 里可能存了多周一份，
+    /// 同一周 + 同一天 + 同一门课 + 同一时段在 SwiftData 里可能存了多份，
     /// 视图层做一次去重避免重叠绘制。
     private var uniqueCourses: [CourseSchedule] {
         var seen = Set<String>()
@@ -187,34 +189,33 @@ private struct CourseCell: View {
     let onTap: () -> Void
 
     @ScaledMetric private var titleSize: CGFloat = 13
-    @ScaledMetric private var subtitleSize: CGFloat = 9
+    @ScaledMetric private var subtitleSize: CGFloat = 10
 
     private var color: Color { CalendarPalette.color(for: course.courseName) }
 
     var body: some View {
         Button(action: onTap) {
-            HStack(spacing: 0) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(course.courseName)
-                        .font(.system(size: titleSize, weight: .semibold))
-                        .foregroundColor(color)
-                        .lineLimit(3)
-                        .multilineTextAlignment(.leading)
-                        .padding(.top, 4)
+            VStack(alignment: .leading, spacing: 2) {
+                // 不加 lineLimit，让 SwiftUI 按可用高度自动换行；
+                // fixedSize 强制按内容垂直撑开，避免文本被外层 frame 截断为单行
+                Text(course.courseName)
+                    .font(.system(size: titleSize, weight: .semibold))
+                    .foregroundColor(color)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 4)
 
-                    if !course.location.isEmpty {
-                        Text(course.location)
-                            .font(.system(size: subtitleSize))
-                            .foregroundColor(color.opacity(0.85))
-                            .lineLimit(2)
-                            .multilineTextAlignment(.leading)
-                    }
-                    Spacer(minLength: 0)
+                if !course.location.isEmpty {
+                    Text(course.location)
+                        .font(.system(size: subtitleSize))
+                        .foregroundColor(color.opacity(0.85))
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .padding(.leading, 6)
-                .padding(.trailing, 4)
                 Spacer(minLength: 0)
             }
+            .padding(.leading, 6)
+            .padding(.trailing, 3)
             .frame(width: dx, height: CGFloat(span) * dy, alignment: .topLeading)
             .background(color.opacity(0.18))
             .overlay(
@@ -267,7 +268,7 @@ enum CalendarPalette {
         .red, .pink, .purple, .blue, .cyan, .teal, .green, .orange, .brown, .indigo
     ]
 
-    /// 按课程名稳定哈希挑选 palette 中的颜色（DanXi 的 `randomColor` 思路）。
+    /// 按课程名稳定哈希挑选 palette 中的颜色（与 DanXi `randomColor` 同思路）。
     static func color(for name: String) -> Color {
         var sum = 0
         for c in name.utf16 { sum &+= Int(c) }
