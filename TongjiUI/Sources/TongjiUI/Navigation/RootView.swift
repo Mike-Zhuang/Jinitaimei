@@ -25,18 +25,16 @@ public struct RootView: View {
                     Label("校园", systemImage: "building.columns")
                 }
         }
-        .onAppear {
+        .task {
             campusModel.refresh()
             if !campusModel.loggedIn {
                 showLogin = true
             }
         }
-        .onChange(of: campusModel.loggedIn) { _, isLogged in
-            if !isLogged { showLogin = true }
-        }
         .fullScreenCover(isPresented: $showLogin) {
             LoginPage(onFinished: {
                 showLogin = false
+                campusModel.refresh()
             })
         }
     }

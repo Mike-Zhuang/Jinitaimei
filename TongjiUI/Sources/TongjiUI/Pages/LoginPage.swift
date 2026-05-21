@@ -10,6 +10,7 @@ public struct LoginPage: View {
 
     @StateObject private var coordinator = TongjiAuthCoordinator()
     @Environment(\.dismiss) private var dismiss
+    @State private var didStart = false
     private let onFinished: () -> Void
 
     public init(onFinished: @escaping () -> Void = {}) {
@@ -31,9 +32,9 @@ public struct LoginPage: View {
                 }
             }
             .onAppear {
-                if case .idle = coordinator.stage {
-                    coordinator.start()
-                }
+                guard !didStart else { return }
+                didStart = true
+                coordinator.start()
             }
             .onChange(of: coordinator.stage) { _, newValue in
                 if case .finished = newValue {

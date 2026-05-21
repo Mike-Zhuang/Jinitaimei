@@ -21,8 +21,8 @@
 
 ```
 Jinitaimei/
-├── project.yml                # XcodeGen 项目描述（修改后跑 `xcodegen` 重新生成 .xcodeproj）
-├── Jinitaimei.xcodeproj/      # Xcode 壳工程（由 project.yml 生成）
+├── project.yml                # XcodeGen 项目描述（唯一事实来源；修改后跑 `xcodegen generate`）
+├── Jinitaimei.xcodeproj/      # Xcode 壳工程（不入仓，clone 后由 xcodegen 生成）
 ├── App/                       # iOS App 入口
 │   ├── JinitaimeiApp.swift    # @main 入口，注册 SwiftData ModelContainer
 │   ├── Info.plist
@@ -54,19 +54,25 @@ Jinitaimei (App) → TongjiUI → TongjiKit
 
 - macOS 14 Sonoma 或更新
 - Xcode 15.0+（含 iOS 17.0 SDK）
+- **必装** [XcodeGen](https://github.com/yonaskolb/XcodeGen)：`brew install xcodegen`
+  本仓库不提交 `Jinitaimei.xcodeproj/`（已写进 `.gitignore`），`project.yml` 才是工程描述的唯一事实来源。
 - 一个 Apple ID（免费即可，真机 7 天证书；如有付费开发者账号可直接长期签）
-- 仅用命令行构建时还需 `xcodegen`（`brew install xcodegen`）
 
 ### 首次打开
 
 ```bash
+# 1. 安装 XcodeGen（如已装跳过）
+brew install xcodegen
+
+# 2. 在仓库 Jinitaimei/ 目录下生成 Xcode 工程
 cd Jinitaimei
-# 如果 .xcodeproj 已经存在可直接打开；如果只有 project.yml，则先生成：
 xcodegen generate
+
+# 3. 打开
 open Jinitaimei.xcodeproj
 ```
 
-> 修改 `project.yml`（增删文件、改 bundle id 等）后，需要重新跑 `xcodegen generate`。直接在 Xcode 里改也行，但 `project.yml` 才是单一事实来源。
+> 任何时候修改了 `project.yml`（增删源文件目录、改 bundle id、调 build setting 等）后，都要重新跑 `xcodegen generate`。也别试图把 Xcode 里手动加的文件/设置写回，下一次 generate 会被覆盖——所有改动应该写到 `project.yml`。
 
 ### 在 iPhone 模拟器中运行
 
@@ -96,7 +102,10 @@ open Jinitaimei.xcodeproj
 ### 命令行构建（CI 友好）
 
 ```bash
-# 仅编译（不签名），快速校验代码无误
+# 1. 生成工程（首次或修改 project.yml 后）
+xcodegen generate
+
+# 2. 仅编译（不签名），快速校验代码无误
 xcodebuild \
   -project Jinitaimei.xcodeproj \
   -scheme Jinitaimei \
@@ -104,6 +113,17 @@ xcodebuild \
   -configuration Debug \
   build CODE_SIGNING_ALLOWED=NO
 ```
+
+### 常见问题排查
+
+- **App 界面只占屏幕中间，上下两条黑边** ——
+  iOS 没识别到 LaunchScreen 配置，被强制按"iPhone 4 兼容模式"渲染。检查 [App/Info.plist](App/Info.plist) 里有 `UILaunchScreen` 键，然后在 Xcode 里 `Product → Clean Build Folder` (⇧⌘K) 一次再 ⌘R。
+- **登录页一闪而过自动关闭** ——
+  当前实现在每次进入 `LoginPage` 时主动清空 WKWebView 的 cookie/localStorage，强制重新走 SSO；如果你修改 [TongjiAuthCoordinator.swift](TongjiKit/Sources/TongjiKit/Authentication/TongjiAuthCoordinator.swift) `start()` 去掉清理逻辑，残留 cookie 会让 SSO 静默通过、登录页会瞬间关闭。
+- **修改 project.yml 后 Xcode 编译不到新文件** —— 重新跑 `xcodegen generate`。
+- **修改了 SPM Package（TongjiKit / TongjiUI）后 Xcode 看似没更新** ——
+  `File → Packages → Reset Package Caches`，或直接关闭 Xcode 后 `rm -rf Jinitaimei.xcodeproj/project.xcworkspace/xcshareddata/swiftpm` 再 `xcodegen generate`。
+- **真机首次安装提示"不受信任的开发者"** —— 见上面"真机数据线调试"第 5 步。
 
 ## 上游参考链接
 

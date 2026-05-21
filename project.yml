@@ -30,8 +30,6 @@ targets:
           - "Info.plist"
     resources:
       - App/Assets.xcassets
-    info:
-      path: App/Info.plist
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.jinitaimei.app

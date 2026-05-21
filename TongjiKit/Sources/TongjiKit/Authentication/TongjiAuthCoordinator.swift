@@ -47,11 +47,30 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
         self.webView.navigationDelegate = self
     }
 
-    /// 开始登录流程：加载一系统首页，触发 SSO 重定向。
+    /// 开始登录流程：清空旧 WebView 数据后加载一系统首页，触发 SSO 重定向。
+    ///
+    /// 不清空 cookie 会出现"上次登录残留 cookie 导致 SSO 静默自动完成、
+    /// 用户看到登录页一闪而过就关掉"的诡异行为。这里强制每次都重新过 SSO，
+    /// 用户能明确看到登录表单。
     public func start() {
         stage = .awaitingUserLogin
         tongjiExtracted = false
-        webView.load(URLRequest(url: tongjiLandingURL))
+
+        let dataStore = webView.configuration.websiteDataStore
+        let dataTypes: Set<String> = [
+            WKWebsiteDataTypeCookies,
+            WKWebsiteDataTypeLocalStorage,
+            WKWebsiteDataTypeSessionStorage,
+            WKWebsiteDataTypeMemoryCache,
+            WKWebsiteDataTypeDiskCache
+        ]
+        dataStore.removeData(
+            ofTypes: dataTypes,
+            modifiedSince: Date(timeIntervalSince1970: 0)
+        ) { [weak self] in
+            guard let self else { return }
+            self.webView.load(URLRequest(url: self.tongjiLandingURL))
+        }
     }
 
     // MARK: - 内部：URL 判定
