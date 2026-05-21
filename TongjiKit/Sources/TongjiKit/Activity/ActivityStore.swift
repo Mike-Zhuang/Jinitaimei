@@ -54,6 +54,19 @@ public final class ActivityStore: ObservableObject {
         lastError = nil
     }
 
+    /// 清空本地活动缓存。虽然活动列表来自公开接口，但退出登录后不展示校园服务内容。
+    public func clearLocalData() {
+        do {
+            try clearAll()
+            try context.save()
+            activities = []
+            lastError = nil
+        } catch {
+            activities = []
+            lastError = error.localizedDescription
+        }
+    }
+
     private func clearAll() throws {
         let descriptor = FetchDescriptor<CampusActivity>()
         let all = try context.fetch(descriptor)

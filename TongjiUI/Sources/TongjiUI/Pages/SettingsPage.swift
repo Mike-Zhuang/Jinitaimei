@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 import TongjiKit
 
 /// 设置页：账户入口参考 DanXi-swift `FudanUI/General/AccountButton.swift`。
@@ -75,6 +76,7 @@ private struct CampusAccountButton: View {
 
 private struct AccountSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
     @ObservedObject private var campusModel = CampusModel.shared
 
     var body: some View {
@@ -109,11 +111,14 @@ private struct AccountSheet: View {
                                 systemImage: "person.crop.circle.badge.questionmark",
                                 description: Text("请重新登录校园账户后查看。")
                             )
+                            .listEmptyRowStyle()
                         }
                     }
 
                     Section {
                         Button(role: .destructive) {
+                            CourseStore(modelContext: modelContext).clearLocalData()
+                            ActivityStore(modelContext: modelContext).clearLocalData()
                             campusModel.logout()
                             dismiss()
                         } label: {

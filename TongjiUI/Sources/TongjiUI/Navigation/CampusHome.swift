@@ -8,6 +8,7 @@ import TongjiKit
 /// 十余个服务入口，并支持置顶服务卡片；此处保留可扩展结构。
 public struct CampusHome: View {
 
+    @ObservedObject private var campusModel = CampusModel.shared
     @StateObject private var model = CampusHomeModel()
     @State private var showEditor = false
 
@@ -16,7 +17,16 @@ public struct CampusHome: View {
     public var body: some View {
         NavigationStack {
             List {
-                if !model.pinnedServices.isEmpty {
+                if !campusModel.loggedIn {
+                    Section {
+                        ContentUnavailableView(
+                            "请先登录校园账户",
+                            systemImage: "person.crop.circle.badge.exclamationmark",
+                            description: Text("登录后可查看卓越星、教务通知等校园服务")
+                        )
+                        .listEmptyRowStyle()
+                    }
+                } else if !model.pinnedServices.isEmpty {
                     ForEach(model.pinnedServices) { service in
                         Section {
                             NavigationLink {
@@ -37,20 +47,22 @@ public struct CampusHome: View {
                     }
                 }
 
-                Section("全部服务") {
-                    ForEach(model.unpinnedServices) { service in
-                        NavigationLink {
-                            service.destination
-                        } label: {
-                            service.label
-                        }
-                        .swipeActions {
-                            Button {
-                                model.pin(service)
+                if campusModel.loggedIn {
+                    Section("全部服务") {
+                        ForEach(model.unpinnedServices) { service in
+                            NavigationLink {
+                                service.destination
                             } label: {
-                                Image(systemName: "pin.fill")
+                                service.label
                             }
-                            .tint(.orange)
+                            .swipeActions {
+                                Button {
+                                    model.pin(service)
+                                } label: {
+                                    Image(systemName: "pin.fill")
+                                }
+                                .tint(.orange)
+                            }
                         }
                     }
                 }
@@ -59,8 +71,10 @@ public struct CampusHome: View {
             .listSectionSpacing(.compact)
             .navigationTitle("校园服务")
             .toolbar {
-                Button("编辑") {
-                    showEditor = true
+                if campusModel.loggedIn {
+                    Button("编辑") {
+                        showEditor = true
+                    }
                 }
             }
             .sheet(isPresented: $showEditor) {

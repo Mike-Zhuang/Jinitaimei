@@ -22,35 +22,46 @@ public struct ActivityListPage: View {
 
     public var body: some View {
         List {
-            if let summary = campusModel.starScoreSummary {
+            if !campusModel.loggedIn {
+                ContentUnavailableView(
+                    "请先登录校园账户",
+                    systemImage: "person.crop.circle.badge.exclamationmark",
+                    description: Text("登录后可查看卓越星活动与个人星值")
+                )
+                .listEmptyRowStyle()
+            } else if let summary = campusModel.starScoreSummary {
                 Section {
                     StarScoreSummaryView(summary: summary)
                 }
             }
 
-            ForEach(filteredActivities, id: \.remoteId) { activity in
-                Button {
-                    if let link = activity.link, let url = URL(string: link) {
-                        presentedURL = IdentifiedURL(url: url)
+            if campusModel.loggedIn {
+                ForEach(filteredActivities, id: \.remoteId) { activity in
+                    Button {
+                        if let link = activity.link, let url = URL(string: link) {
+                            presentedURL = IdentifiedURL(url: url)
+                        }
+                    } label: {
+                        ActivityRow(activity: activity)
                     }
-                } label: {
-                    ActivityRow(activity: activity)
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
-            }
-            if !store.isLoading {
-                if store.activities.isEmpty {
-                    ContentUnavailableView(
-                        "暂无活动",
-                        systemImage: "star.circle",
-                        description: Text(campusModel.loggedIn ? "下拉或点击右上角刷新" : "公开活动可匿名浏览，登录后可同步个人星值")
-                    )
-                } else if filteredActivities.isEmpty {
-                    ContentUnavailableView(
-                        "没有匹配活动",
-                        systemImage: "line.3.horizontal.decrease.circle",
-                        description: Text("请调整星星种类、星值、活动状态或排序条件")
-                    )
+                if !store.isLoading {
+                    if store.activities.isEmpty {
+                        ContentUnavailableView(
+                            "暂无活动",
+                            systemImage: "star.circle",
+                            description: Text("下拉或点击右上角刷新")
+                        )
+                        .listEmptyRowStyle()
+                    } else if filteredActivities.isEmpty {
+                        ContentUnavailableView(
+                            "没有匹配活动",
+                            systemImage: "line.3.horizontal.decrease.circle",
+                            description: Text("请调整星星种类、星值、活动状态或排序条件")
+                        )
+                        .listEmptyRowStyle()
+                    }
                 }
             }
         }
@@ -64,6 +75,7 @@ public struct ActivityListPage: View {
                 } label: {
                     Image(systemName: filterState.isActive ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
                 }
+                .disabled(!campusModel.loggedIn)
 
                 Button {
                     Task { await store.sync() }
@@ -74,14 +86,18 @@ public struct ActivityListPage: View {
                         Image(systemName: "arrow.clockwise")
                     }
                 }
-                .disabled(store.isLoading)
+                .disabled(store.isLoading || !campusModel.loggedIn)
             }
         }
         .refreshable {
+            guard campusModel.loggedIn else { return }
             await store.sync()
         }
         .task {
-            guard campusModel.loggedIn else { return }
+            guard campusModel.loggedIn else {
+                store.clearLocalData()
+                return
+            }
             if store.activities.isEmpty {
                 await store.sync()
             }
@@ -93,6 +109,8 @@ public struct ActivityListPage: View {
             }
             if newValue {
                 Task { await campusModel.refreshStarScoreSummary() }
+            } else {
+                store.clearLocalData()
             }
         }
         .alert("加载失败", isPresented: $showError) {

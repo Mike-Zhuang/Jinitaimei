@@ -69,6 +69,19 @@ public final class CourseStore: ObservableObject {
         lastError = nil
     }
 
+    /// 清空本地课表缓存。退出登录时调用，避免下一个用户看到上一位用户的课表。
+    public func clearLocalData() {
+        do {
+            try clearAll()
+            try context.save()
+            schedules = []
+            lastError = nil
+        } catch {
+            schedules = []
+            lastError = error.localizedDescription
+        }
+    }
+
     private func clearAll() throws {
         let descriptor = FetchDescriptor<CourseSchedule>()
         let all = try context.fetch(descriptor)

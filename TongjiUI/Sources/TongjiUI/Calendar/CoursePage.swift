@@ -66,7 +66,7 @@ public struct CoursePage: View {
                         } label: {
                             Label("刷新课表", systemImage: "arrow.clockwise")
                         }
-                        .disabled(store.isLoading)
+                        .disabled(store.isLoading || !campusModel.loggedIn)
 
                         Button {
                             Task { await requestCalendarAccess() }
@@ -92,6 +92,10 @@ public struct CoursePage: View {
                 }
             }
             .refreshable {
+                guard campusModel.loggedIn else {
+                    store.clearLocalData()
+                    return
+                }
                 await store.sync()
                 computeCurrentWeek()
             }
@@ -113,7 +117,10 @@ public struct CoursePage: View {
             }
             .task {
                 computeCurrentWeek()
-                guard campusModel.loggedIn else { return }
+                guard campusModel.loggedIn else {
+                    store.clearLocalData()
+                    return
+                }
                 await refreshCalendarMetadataIfNeeded()
                 if store.schedules.isEmpty {
                     await store.sync()
@@ -130,6 +137,9 @@ public struct CoursePage: View {
                         }
                         computeCurrentWeek()
                     }
+                } else {
+                    store.clearLocalData()
+                    selectedWeek = 1
                 }
             }
         }
@@ -156,9 +166,7 @@ public struct CoursePage: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 40)
-        .listRowBackground(Color.clear)
+        .listEmptyRowStyle(verticalPadding: 40)
     }
 
     private var weekRange: ClosedRange<Int> {

@@ -23,6 +23,7 @@ public struct TeachingNoticePage: View {
                     systemImage: "person.crop.circle.badge.exclamationmark",
                     description: Text("进入“设置 → 校园账户”完成登录后可查看通知公告")
                 )
+                .listEmptyRowStyle()
             } else {
                 ForEach(notices) { notice in
                     Button {
@@ -46,6 +47,7 @@ public struct TeachingNoticePage: View {
                         systemImage: "bell",
                         description: Text("下拉或点击右上角刷新")
                     )
+                    .listEmptyRowStyle()
                 }
 
                 if hasMore {
