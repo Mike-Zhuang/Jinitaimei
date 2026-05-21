@@ -12,6 +12,11 @@ public final class CampusActivity {
     public var location: String?
     public var link: String?
     public var descriptionText: String?
+    /// STAR 模块代码，如 `hongwen` / `mingde` / `shizhi` / `qiusuo` / `lixing`。
+    public var moduleCode: String?
+    public var moduleName: String?
+    /// 单个活动可获得的星值。
+    public var starPoints: Double = 0
     public var syncTime: Date = Date()
 
     public init(
@@ -22,6 +27,9 @@ public final class CampusActivity {
         location: String?,
         link: String?,
         descriptionText: String?,
+        moduleCode: String?,
+        moduleName: String?,
+        starPoints: Double,
         syncTime: Date
     ) {
         self.remoteId = remoteId
@@ -31,6 +39,9 @@ public final class CampusActivity {
         self.location = location
         self.link = link
         self.descriptionText = descriptionText
+        self.moduleCode = moduleCode
+        self.moduleName = moduleName
+        self.starPoints = starPoints
         self.syncTime = syncTime
     }
 }

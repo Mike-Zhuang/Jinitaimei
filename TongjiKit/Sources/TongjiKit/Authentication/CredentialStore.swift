@@ -97,5 +97,6 @@ public final class CredentialStore: @unchecked Sendable {
 
         // 卓越星（star.tongji.edu.cn）相关
         public static let starBearerToken = "star_bearer_token"
+        public static let starScoreSummary = "star_score_summary"
     }
 }

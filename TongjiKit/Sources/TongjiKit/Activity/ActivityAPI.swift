@@ -21,7 +21,7 @@ public final class ActivityAPI {
 
     /// 拉取全部活动的原始 JSON 项目数组（每个元素是一条活动的 JSON 字符串）。
     public func fetchAllActivitiesRaw() async throws -> [String] {
-        let token = store.get(CredentialStore.Keys.starBearerToken)
+        let token = validTokenOrNil()
 
         var all: [String] = []
         var pageNo = 1
@@ -44,6 +44,7 @@ public final class ActivityAPI {
             if let code = (dict["code"] as? Int) ?? (dict["code"] as? NSNumber)?.intValue {
                 if code == 401 || code == 403 {
                     store.remove(CredentialStore.Keys.starBearerToken)
+                    store.remove(CredentialStore.Keys.starScoreSummary)
                     throw AuthError.expired("STAR 平台凭证已失效，请重新登录")
                 }
                 if code != 0 { break }
@@ -70,6 +71,44 @@ public final class ActivityAPI {
         return all
     }
 
+    /// 拉取并缓存当前用户的卓越星个人星值。
+    public func fetchStarScoreSummary() async throws -> StarScoreSummary {
+        guard let token = validTokenOrNil() else {
+            throw AuthError.notLoggedIn("未找到 STAR 平台登录凭证，请先完成登录")
+        }
+
+        let url = URL(string: "\(apiBase.absoluteString)/api/app-api/activity/statistics/start-count")!
+        var request = URLRequest(url: url)
+        applyAuthHeaders(&request, token: token)
+        request.setValue(apiBase.absoluteString, forHTTPHeaderField: "X-Request-Origin")
+
+        let (data, response) = try await session.data(for: request)
+        try ensureAuth(response: response)
+
+        let payload = try JSONDecoder().decode(StarScoreResponse.self, from: data)
+        guard payload.code == 0, let data = payload.data else {
+            throw AuthError.loginFlowFailed(payload.msg?.isEmpty == false ? payload.msg! : "卓越星个人星值响应异常")
+        }
+
+        let summary = StarScoreSummary(
+            totalScore: data.totalScore ?? 0,
+            currentLevel: data.currentLevel,
+            nextLevelScore: data.nextLevelScore,
+            hongwenScore: data.hongwenScore ?? 0,
+            hongwenStage: data.hongwenStage,
+            mingdeScore: data.mingdeScore ?? 0,
+            mingdeStage: data.mingdeStage,
+            shizhiScore: data.shizhiScore ?? 0,
+            shizhiStage: data.shizhiStage,
+            qiusuoScore: data.qiusuoScore ?? 0,
+            qiusuoStage: data.qiusuoStage,
+            lixingScore: data.lixingScore ?? 0,
+            lixingStage: data.lixingStage
+        )
+        summary.cache(to: store)
+        return summary
+    }
+
     private func applyAuthHeaders(_ request: inout URLRequest, token: String?) {
         if let token, !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -83,14 +122,48 @@ public final class ActivityAPI {
         request.timeoutInterval = 15
     }
 
+    private func validTokenOrNil() -> String? {
+        guard let token = store.get(CredentialStore.Keys.starBearerToken)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              token.count >= 20,
+              token.lowercased() != "bearer" else {
+            store.remove(CredentialStore.Keys.starBearerToken)
+            return nil
+        }
+        return token
+    }
+
     private func ensureAuth(response: URLResponse) throws {
         guard let http = response as? HTTPURLResponse else { return }
         if http.statusCode == 401 || http.statusCode == 403 {
             store.remove(CredentialStore.Keys.starBearerToken)
+            store.remove(CredentialStore.Keys.starScoreSummary)
             throw AuthError.expired("STAR 平台凭证已失效，请重新登录")
         }
         if !(200..<300).contains(http.statusCode) {
             throw AuthError.loginFlowFailed("HTTP \(http.statusCode)")
         }
     }
+}
+
+private struct StarScoreResponse: Decodable {
+    let code: Int
+    let data: StarScoreData?
+    let msg: String?
+}
+
+private struct StarScoreData: Decodable {
+    let totalScore: Double?
+    let currentLevel: Int?
+    let nextLevelScore: Double?
+    let hongwenScore: Double?
+    let hongwenStage: Int?
+    let mingdeScore: Double?
+    let mingdeStage: Int?
+    let shizhiScore: Double?
+    let shizhiStage: Int?
+    let qiusuoScore: Double?
+    let qiusuoStage: Int?
+    let lixingScore: Double?
+    let lixingStage: Int?
 }

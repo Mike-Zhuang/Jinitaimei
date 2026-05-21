@@ -13,6 +13,7 @@ public final class CampusModel: ObservableObject {
     @Published public private(set) var loggedIntoStar: Bool = false
     @Published public private(set) var uid: String?
     @Published public private(set) var profile: TongjiUserProfile?
+    @Published public private(set) var starScoreSummary: StarScoreSummary?
 
     private let store: CredentialStore
 
@@ -29,12 +30,23 @@ public final class CampusModel: ObservableObject {
         self.uid = store.get(CredentialStore.Keys.tongjiUid)
         self.profile = TongjiUserProfile.load(from: store)
         self.loggedIntoStar = store.get(CredentialStore.Keys.starBearerToken) != nil
+        self.starScoreSummary = StarScoreSummary.load(from: store)
     }
 
     /// 从一系统刷新个人资料。
     public func refreshProfile() async {
         do {
             profile = try await SessionAPI(store: store).refreshSessionUser()
+            refresh()
+        } catch {
+            refresh()
+        }
+    }
+
+    /// 从 STAR 平台刷新个人星值。失败时保留已有缓存状态。
+    public func refreshStarScoreSummary() async {
+        do {
+            starScoreSummary = try await ActivityAPI(store: store).fetchStarScoreSummary()
             refresh()
         } catch {
             refresh()

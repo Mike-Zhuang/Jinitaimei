@@ -29,14 +29,17 @@ public enum ActivityParser {
             let link = buildActivityLink(id: remoteId)
 
             var descParts: [String] = []
-            if let module = string(obj, "module") {
-                descParts.append(categoryNameMap[module] ?? module)
+            let moduleCode = string(obj, "module")
+            let moduleName = moduleCode.flatMap { categoryNameMap[$0] } ?? moduleCode
+            if let moduleName {
+                descParts.append(moduleName)
             }
             if let progress = obj["progress"] as? [String: Any],
                let progressName = progress["name"] as? String, !progressName.isEmpty {
                 descParts.append(progressName)
             }
-            if let points = double(obj, "points"), points > 0 {
+            let points = double(obj, "points") ?? 0
+            if points > 0 {
                 descParts.append("星星数量: \(formatPoints(points))")
             }
             if let pageViews = int(obj, "pageViews"), pageViews > 0 {
@@ -52,6 +55,9 @@ public enum ActivityParser {
                 location: location,
                 link: link,
                 descriptionText: description,
+                moduleCode: moduleCode,
+                moduleName: moduleName,
+                starPoints: points,
                 syncTime: now
             ))
         }

@@ -16,8 +16,8 @@ import os.log
 /// - `sessiondata` 在 SPA bootstrap 完成后才写入，必须轮询；只有 `uid` 字段非空
 ///   才算真正就绪，光长度非零不行（中间页可能写入 "null" 占位）。
 ///
-/// 登录完成只判定到"一系统凭证齐全"为止；STAR Bearer Token 在主界面隐式抓取，
-/// 不再阻塞登录页的关闭。
+/// 登录完成以"一系统凭证齐全"为准；STAR Bearer Token 只做 best-effort 抽取，
+/// 失败不阻断登录页关闭。
 @MainActor
 public final class TongjiAuthCoordinator: NSObject, ObservableObject {
 
@@ -25,6 +25,7 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
         case idle
         case awaitingUserLogin
         case extractingTongji
+        case extractingStar
         case finished
         case failed(String)
     }
@@ -36,6 +37,8 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
     private let logger = Logger(subsystem: "com.jinitaimei.app", category: "Auth")
 
     private let tongjiLandingURL = URL(string: "https://1.tongji.edu.cn/workbench")!
+    private let starMyURL = URL(string: "https://star.tongji.edu.cn/app/pages/index/my")!
+    private let starSocialAuthURL = URL(string: "https://star.tongji.edu.cn/api/app-api/system/auth/social-auth-url-redirect?type=36&redirectUri=https://star.tongji.edu.cn/app/pages/login/social")!
 
     private var hasVisitedSSO = false
     private var tongjiExtracted = false
@@ -220,7 +223,171 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
             // 个人信息用于设置页展示，失败不应阻断已完成的一系统登录。
             log("  个人信息拉取失败: \(error)")
         }
+        await extractStarCredentialBestEffort()
         return true
+    }
+
+    /// 抽取 STAR Bearer Token 并刷新个人星值。
+    ///
+    /// 移植自 `wish_drom/Services/DataProviders/StarActivityProvider.cs` 的 XHR
+    /// `setRequestHeader` 拦截思路。STAR 是附加能力，失败时只记录日志。
+    private func extractStarCredentialBestEffort() async {
+        stage = .extractingStar
+        log("  开始同步 STAR 平台个人星值")
+
+        webView.load(URLRequest(url: starSocialAuthURL))
+
+        var token = await tryExchangeStarSocialToken()
+        if token == nil {
+            token = await tryExtractStarToken()
+        }
+        if let token {
+            store.set(token, for: CredentialStore.Keys.starBearerToken)
+            log("  STAR Bearer Token 已存储 (len=\(token.count))")
+            do {
+                _ = try await ActivityAPI(store: store).fetchStarScoreSummary()
+                log("  STAR 个人星值已拉取并存储")
+            } catch {
+                log("  STAR 个人星值拉取失败: \(error)")
+            }
+        } else {
+            log("  STAR Bearer Token 抽取失败，保留同济登录结果")
+        }
+    }
+
+    /// STAR 自身的登录链路：先让 WebView 走同济 IAM SSO，再用回跳 URL 的 code/state
+    /// 调 `/api/app-api/system/auth/social-login` 换取 accessToken。
+    private func tryExchangeStarSocialToken() async -> String? {
+        guard let callback = await waitForStarSocialCallback() else {
+            log("  STAR social-login 回跳未出现，尝试 XHR 拦截兜底")
+            return nil
+        }
+        let components = URLComponents(url: callback, resolvingAgainstBaseURL: false)
+        guard let code = components?.queryItems?.first(where: { $0.name == "code" })?.value,
+              let state = components?.queryItems?.first(where: { $0.name == "state" })?.value,
+              !code.isEmpty, !state.isEmpty else {
+            log("  STAR social-login 回跳缺少 code/state")
+            return nil
+        }
+
+        do {
+            let token = try await requestStarAccessToken(code: code, state: state)
+            webView.load(URLRequest(url: starMyURL))
+            return token
+        } catch {
+            log("  STAR social-login 换 token 失败: \(error)")
+            return nil
+        }
+    }
+
+    private func waitForStarSocialCallback() async -> URL? {
+        for _ in 0..<18 {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard let url = webView.url,
+                  url.host?.lowercased() == "star.tongji.edu.cn",
+                  url.path.lowercased().hasPrefix("/app/pages/login/social") else {
+                continue
+            }
+            return url
+        }
+        return nil
+    }
+
+    private func requestStarAccessToken(code: String, state: String) async throws -> String {
+        let url = URL(string: "https://star.tongji.edu.cn/api/app-api/system/auth/social-login?")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 15
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("*/*", forHTTPHeaderField: "Accept")
+        request.setValue("h5", forHTTPHeaderField: "platform")
+        request.setValue("https://star.tongji.edu.cn", forHTTPHeaderField: "Origin")
+        request.setValue("https://star.tongji.edu.cn", forHTTPHeaderField: "X-Request-Origin")
+        request.setValue("https://star.tongji.edu.cn/app/pages/login/social?code=\(code)&state=\(state)&type=36", forHTTPHeaderField: "Referer")
+        request.httpBody = try JSONEncoder().encode(StarSocialLoginRequest(type: "36", code: code, state: state))
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw AuthError.loginFlowFailed("STAR social-login HTTP 异常")
+        }
+        let payload = try JSONDecoder().decode(StarSocialLoginResponse.self, from: data)
+        guard payload.code == 0,
+              let token = normalizeStarToken(payload.data?.accessToken) else {
+            throw AuthError.loginFlowFailed(payload.msg?.isEmpty == false ? payload.msg! : "STAR accessToken 缺失")
+        }
+        return token
+    }
+
+    private func tryExtractStarToken() async -> String? {
+        let storageProbes = [
+            "localStorage.getItem('token')",
+            "localStorage.getItem('access_token')",
+            "localStorage.getItem('Authorization')",
+            "sessionStorage.getItem('token')",
+            "sessionStorage.getItem('access_token')",
+            "sessionStorage.getItem('Authorization')"
+        ]
+        for probe in storageProbes {
+            if let raw = try? await webView.evaluateJavaScript(probe),
+               let token = normalizeStarToken(JSONUtils.normalizeJavaScriptValue(raw)) {
+                return token
+            }
+        }
+
+        let scripts = [
+            "XMLHttpRequest.prototype.sH=XMLHttpRequest.prototype.setRequestHeader",
+            "window.__fn=String.fromCharCode(102,117,110,99,116,105,111,110)",
+            "window.__xf=window.__fn+'(k,v){'",
+            "window.__xf+='if(k&&k.toLowerCase()==\"authorization\")window.__xhr_t=v;'",
+            "window.__xf+='return this.sH.apply(this,arguments)}'",
+            "window.__xhr_t=''",
+            "window.__xa='XMLHttpRequest.prototype.setRequestHeader='",
+            "eval(window.__xa+window.__xf)"
+        ]
+        for script in scripts {
+            _ = try? await webView.evaluateJavaScript(script)
+        }
+
+        let triggerScripts = [
+            "window.__fb=''",
+            "window.__uc={}",
+            "window.__uc.url='/api/app-api/activity/statistics/start-count'",
+            "window.__uc.method='GET'",
+            "window.__uc.header={platform:'h5'}",
+            "window.__uc.success=eval(window.__fn+'(r){window.__fb=JSON.stringify(r.data)}')",
+            "if(typeof uni!=='undefined'&&uni.request){uni.request(window.__uc)}",
+            "fetch('/api/app-api/activity/statistics/start-count',{headers:{platform:'h5'}}).catch(function(){})",
+            "location.hash='__probe__'+Date.now()"
+        ]
+        for script in triggerScripts {
+            _ = try? await webView.evaluateJavaScript(script)
+        }
+
+        for _ in 0..<10 {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            if let raw = try? await webView.evaluateJavaScript("window.__xhr_t||''"),
+               let token = normalizeStarToken(JSONUtils.normalizeJavaScriptValue(raw)) {
+                return token
+            }
+        }
+        return nil
+    }
+
+    private func normalizeStarToken(_ value: String?) -> String? {
+        guard var token = value?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty else {
+            return nil
+        }
+        if token.lowercased().hasPrefix("bearer ") {
+            token.removeFirst(7)
+        }
+        let lowercased = token.lowercased()
+        guard token.count >= 20,
+              lowercased != "bearer",
+              lowercased != "null",
+              lowercased != "undefined" else {
+            return nil
+        }
+        return token
     }
 
     private func tryGetCookieString() async -> String? {
@@ -284,4 +451,20 @@ extension TongjiAuthCoordinator: WKNavigationDelegate {
     public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         log("didFailProvisional → \(error.localizedDescription)")
     }
+}
+
+private struct StarSocialLoginRequest: Encodable {
+    let type: String
+    let code: String
+    let state: String
+}
+
+private struct StarSocialLoginResponse: Decodable {
+    let code: Int
+    let data: StarSocialLoginData?
+    let msg: String?
+}
+
+private struct StarSocialLoginData: Decodable {
+    let accessToken: String?
 }

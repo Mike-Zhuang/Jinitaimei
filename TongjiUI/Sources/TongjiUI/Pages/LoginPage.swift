@@ -59,6 +59,9 @@ public struct LoginPage: View {
             case .extractingTongji:
                 ProgressView()
                 Text("登录成功，正在保存身份信息…")
+            case .extractingStar:
+                ProgressView()
+                Text("正在同步卓越星信息…")
             case .finished:
                 Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
                 Text("准备完成")
