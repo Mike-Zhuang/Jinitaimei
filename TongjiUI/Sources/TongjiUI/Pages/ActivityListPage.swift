@@ -298,6 +298,17 @@ private struct ActivityFilterSheet: View {
 
 struct StarScoreSummaryView: View {
     let summary: StarScoreSummary
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    private var scoreItems: [(name: String, score: Double)] {
+        [
+            ("弘文", summary.hongwenScore),
+            ("明德", summary.mingdeScore),
+            ("矢志", summary.shizhiScore),
+            ("求索", summary.qiusuoScore),
+            ("力行", summary.lixingScore)
+        ]
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -311,12 +322,30 @@ struct StarScoreSummaryView: View {
                     .font(.system(size: 26, weight: .bold, design: .rounded))
             }
 
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 72), spacing: 8)], alignment: .leading, spacing: 8) {
-                scoreItem("弘文", summary.hongwenScore)
-                scoreItem("明德", summary.mingdeScore)
-                scoreItem("矢志", summary.shizhiScore)
-                scoreItem("求索", summary.qiusuoScore)
-                scoreItem("力行", summary.lixingScore)
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(spacing: 8) {
+                    HStack(spacing: 8) {
+                        ForEach(0..<3, id: \.self) { index in
+                            scoreItem(scoreItems[index].name, scoreItems[index].score)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    HStack(spacing: 8) {
+                        Spacer(minLength: 0)
+                        ForEach(3..<5, id: \.self) { index in
+                            scoreItem(scoreItems[index].name, scoreItems[index].score)
+                                .frame(maxWidth: 92, alignment: .leading)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                }
+            } else {
+                HStack(spacing: 8) {
+                    ForEach(scoreItems.indices, id: \.self) { index in
+                        scoreItem(scoreItems[index].name, scoreItems[index].score)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
             }
         }
         .padding(.vertical, 4)

@@ -5,7 +5,7 @@ import TongjiKit
 /// 校园服务首页（精简版）。
 ///
 /// 复旦 DanXi-swift 的 `CampusHome` 罗列了图书馆、食堂、巴士、电费、教务通知等
-/// 十余个服务入口，并支持置顶服务卡片；此处保留可扩展结构，v1 只有卓越星。
+/// 十余个服务入口，并支持置顶服务卡片；此处保留可扩展结构。
 public struct CampusHome: View {
 
     @StateObject private var model = CampusHomeModel()
@@ -69,6 +69,7 @@ public struct CampusHome: View {
 
 private enum CampusService: String, CaseIterable, Codable, Identifiable {
     case starActivity
+    case teachingNotice
 
     var id: String { rawValue }
 
@@ -77,6 +78,8 @@ private enum CampusService: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .starActivity:
             Label("卓越星活动", systemImage: "star.circle")
+        case .teachingNotice:
+            Label("教学管理信息系统通知公告", systemImage: "bell.badge")
         }
     }
 
@@ -85,6 +88,8 @@ private enum CampusService: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .starActivity:
             StarActivityCard()
+        case .teachingNotice:
+            TeachingNoticeCard()
         }
     }
 
@@ -93,6 +98,8 @@ private enum CampusService: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .starActivity:
             ActivityListPageContainer()
+        case .teachingNotice:
+            TeachingNoticePage()
         }
     }
 }
@@ -112,7 +119,7 @@ private final class CampusHomeModel: ObservableObject {
     init() {
         let defaults = UserDefaults.standard
         self.pinnedServices = Self.load(key: pinnedKey, from: defaults) ?? []
-        self.unpinnedServices = Self.load(key: unpinnedKey, from: defaults) ?? [.starActivity]
+        self.unpinnedServices = Self.load(key: unpinnedKey, from: defaults) ?? [.starActivity, .teachingNotice]
         normalize()
     }
 
@@ -273,6 +280,83 @@ private struct StarActivityCard: View {
             Text(StarScoreSummary.formatScore(score))
                 .font(.caption)
                 .bold()
+        }
+    }
+}
+
+private struct TeachingNoticeCard: View {
+    @ObservedObject private var campusModel = CampusModel.shared
+    @State private var latestNotice: TeachingNotice?
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("教务通知", systemImage: "bell.fill")
+                    .font(.callout)
+                    .bold()
+                    .foregroundColor(.blue)
+                Spacer()
+            }
+
+            if !campusModel.loggedIn {
+                Text("登录后查看最新通知")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            } else if let latestNotice {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(latestNotice.title)
+                        .font(.callout)
+                        .foregroundColor(.primary)
+                        .lineLimit(3)
+                    Text(latestNotice.displayDate)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            } else if isLoading {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("正在加载最新通知")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            } else if let errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+            } else {
+                Text("暂无通知公告")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(.vertical, 4)
+        .task {
+            guard campusModel.loggedIn, latestNotice == nil, errorMessage == nil else { return }
+            await loadLatestNotice()
+        }
+        .onChange(of: campusModel.loggedIn) { _, loggedIn in
+            latestNotice = nil
+            errorMessage = nil
+            if loggedIn {
+                Task { await loadLatestNotice() }
+            }
+        }
+    }
+
+    private func loadLatestNotice() async {
+        guard campusModel.loggedIn, !isLoading else { return }
+        isLoading = true
+        defer { isLoading = false }
+
+        do {
+            latestNotice = try await TeachingNoticeAPI().fetchLatestNotice()
+            errorMessage = nil
+        } catch {
+            latestNotice = nil
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? "最新通知加载失败"
         }
     }
 }
