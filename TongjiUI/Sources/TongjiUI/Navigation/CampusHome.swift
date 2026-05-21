@@ -250,39 +250,33 @@ private struct StarActivityCard: View {
     @ObservedObject private var campusModel = CampusModel.shared
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack {
-                Label("卓越星", systemImage: "star.circle.fill")
-                    .font(.callout)
-                    .bold()
-                    .foregroundColor(.orange)
-                Spacer()
-            }
-
+        PinnedServiceCardLayout(title: "卓越星", systemImage: "star.circle.fill", color: .orange) {
             if let summary = campusModel.starScoreSummary {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(StarScoreSummary.formatScore(summary.totalScore))
-                        .font(.system(size: 24, weight: .bold, design: .rounded))
-                    Text("总星值")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Spacer()
-                }
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Text(StarScoreSummary.formatScore(summary.totalScore))
+                            .font(.system(size: 24, weight: .bold, design: .rounded))
+                        Text("总星值")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                    }
 
-                HStack(spacing: 9) {
-                    compactScore("弘", summary.hongwenScore)
-                    compactScore("明", summary.mingdeScore)
-                    compactScore("矢", summary.shizhiScore)
-                    compactScore("求", summary.qiusuoScore)
-                    compactScore("力", summary.lixingScore)
+                    HStack(spacing: 9) {
+                        compactScore("弘", summary.hongwenScore)
+                        compactScore("明", summary.mingdeScore)
+                        compactScore("矢", summary.shizhiScore)
+                        compactScore("求", summary.qiusuoScore)
+                        compactScore("力", summary.lixingScore)
+                    }
                 }
             } else {
                 Text(campusModel.loggedIntoStar ? "正在等待星值同步" : "登录后同步星值")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(.vertical, 4)
         .task {
             guard campusModel.loggedIntoStar, campusModel.starScoreSummary == nil else { return }
             await campusModel.refreshStarScoreSummary()
@@ -308,19 +302,12 @@ private struct TeachingNoticeCard: View {
     @State private var errorMessage: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack {
-                Label("教务通知", systemImage: "bell.fill")
-                    .font(.callout)
-                    .bold()
-                    .foregroundColor(.blue)
-                Spacer()
-            }
-
+        PinnedServiceCardLayout(title: "教务通知", systemImage: "bell.fill", color: .blue) {
             if !campusModel.loggedIn {
                 Text("登录后查看最新通知")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             } else if let latestNotice {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(latestNotice.title)
@@ -331,6 +318,7 @@ private struct TeachingNoticeCard: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             } else if isLoading {
                 HStack(spacing: 8) {
                     ProgressView()
@@ -338,18 +326,20 @@ private struct TeachingNoticeCard: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             } else if let errorMessage {
                 Text(errorMessage)
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 Text("暂无通知公告")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(.vertical, 4)
         .task {
             guard campusModel.loggedIn, latestNotice == nil, errorMessage == nil else { return }
             await loadLatestNotice()
@@ -375,6 +365,31 @@ private struct TeachingNoticeCard: View {
             latestNotice = nil
             errorMessage = (error as? LocalizedError)?.errorDescription ?? "最新通知加载失败"
         }
+    }
+}
+
+private struct PinnedServiceCardLayout<Content: View>: View {
+    let title: String
+    let systemImage: String
+    let color: Color
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Label(title, systemImage: systemImage)
+                    .font(.callout)
+                    .bold()
+                    .foregroundColor(color)
+                Spacer()
+            }
+
+            Spacer(minLength: 6)
+
+            content
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.vertical, 4)
     }
 }
 

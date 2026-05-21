@@ -43,6 +43,7 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
     private var hasVisitedSSO = false
     private var tongjiExtracted = false
     private var tongjiExtractionTask: Task<Void, Never>?
+    private var starSyncTask: Task<Void, Never>?
     private var urlObservation: NSKeyValueObservation?
 
     public init(store: CredentialStore = .shared) {
@@ -73,6 +74,8 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
         tongjiExtracted = false
         tongjiExtractionTask?.cancel()
         tongjiExtractionTask = nil
+        starSyncTask?.cancel()
+        starSyncTask = nil
 
         let dataStore = webView.configuration.websiteDataStore
         let dataTypes: Set<String> = [
@@ -223,8 +226,20 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
             // 个人信息用于设置页展示，失败不应阻断已完成的一系统登录。
             log("  个人信息拉取失败: \(error)")
         }
-        await extractStarCredentialBestEffort()
+        startStarSyncInBackground()
         return true
+    }
+
+    /// 一系统登录完成后，登录页即可关闭；STAR 同步继续在同一个隐藏 WebView 上后台完成。
+    private func startStarSyncInBackground() {
+        guard starSyncTask == nil else { return }
+        starSyncTask = Task { @MainActor in
+            defer {
+                CampusModel.shared.refresh()
+                self.starSyncTask = nil
+            }
+            await self.extractStarCredentialBestEffort()
+        }
     }
 
     /// 抽取 STAR Bearer Token 并刷新个人星值。
@@ -232,7 +247,6 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
     /// 移植自 `wish_drom/Services/DataProviders/StarActivityProvider.cs` 的 XHR
     /// `setRequestHeader` 拦截思路。STAR 是附加能力，失败时只记录日志。
     private func extractStarCredentialBestEffort() async {
-        stage = .extractingStar
         log("  开始同步 STAR 平台个人星值")
 
         webView.load(URLRequest(url: starSocialAuthURL))
