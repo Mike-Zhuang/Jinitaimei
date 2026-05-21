@@ -4,27 +4,20 @@ import os.log
 
 /// 同济统一身份认证（iam.tongji.edu.cn SSO）登录协调器。
 ///
-/// 流程（基于 wish_drom 实战验证的链路 + 真机日志反推）：
+/// 设计原则（来自真机日志反推）：
 ///
-/// ```
-/// 1) 打开 1.tongji.edu.cn/workbench
-///    └─► 302 → /ssologin → /api/ssoservice/system/loginIn
-///        └─► 302 → iam.tongji.edu.cn/idp/oauth2/authorize…
-///            └─► 用户输入账号密码并提交
-///                └─► iam 重定向回 1.tongji.edu.cn/api/ssoservice/system/loginIn?code=…
-///                    └─► 后端兑换 token → 302 到 http://1.tongji.edu.cn/ssologin?token=…&uid=…&ts=…
-///                        └─► 最终落到 https://1.tongji.edu.cn/workbench (SPA)
-/// 2) 此时才有真正的 cookie / sessionid / localStorage.sessiondata
-///    └─► 用 uid + aesKey + aesIv 做 AES-CBC-PKCS7 加密生成 studentCode
-/// 3) 隐式跳转 star.tongji.edu.cn，复用 SSO Cookie 走完二级登录 → XHR 拦截抓 Bearer Token
-/// ```
+/// - `WKWebView` 一接到 `load` 请求 `url` 就立即被设置为目标地址，导致 KVO 误报。
+///   因此**绝对不能只靠 host 判断登录是否完成**。
+/// - SSO 完整链路：`1.tongji.edu.cn/workbench` → `/ssologin` → `/api/ssoservice/system/loginIn`
+///   → `iam.tongji.edu.cn/idp/oauth2/authorize` → 用户输密码 → `/api/ssoservice/.../loginIn?code=...`
+///   → `http://1.tongji.edu.cn/ssologin?token=...&uid=...&ts=...` → 最终 `https://1.tongji.edu.cn/workbench/...`
+/// - 真正可抽取的"workbench SPA 已就绪"判定：**host 是 1.tongji.edu.cn 且 path 以
+///   `/workbench` 开头（去除中间页 `/ssologin`、`/api/...`、`/idp/...`）**。
+/// - `sessiondata` 在 SPA bootstrap 完成后才写入，必须轮询；只有 `uid` 字段非空
+///   才算真正就绪，光长度非零不行（中间页可能写入 "null" 占位）。
 ///
-/// 关键设计点：
-/// - **不在初次 load 时抽取**：WKWebView 一接到 load 请求 `webView.url` 就立刻被设置为目标 URL，
-///   KVO 会误报 "已经在 workbench"。必须先用 `hasVisitedSSO` 状态机锁定：只有用户真
-///   去过 iam SSO 域再回到 1.tongji.edu.cn 才认为登录完成。
-/// - **短轮询而非死等**：登录完成后 SPA bootstrap 通常 2-4 秒就能写入 sessiondata，
-///   8 秒轮询足够；一旦拿到立即退出。
+/// 登录完成只判定到"一系统凭证齐全"为止；STAR Bearer Token 在主界面隐式抓取，
+/// 不再阻塞登录页的关闭。
 @MainActor
 public final class TongjiAuthCoordinator: NSObject, ObservableObject {
 
@@ -32,7 +25,6 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
         case idle
         case awaitingUserLogin
         case extractingTongji
-        case capturingStarToken
         case finished
         case failed(String)
     }
@@ -44,21 +36,16 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
     private let logger = Logger(subsystem: "com.jinitaimei.app", category: "Auth")
 
     private let tongjiLandingURL = URL(string: "https://1.tongji.edu.cn/workbench")!
-    private let starLandingURL = URL(string: "https://star.tongji.edu.cn")!
 
-    /// 用户是否曾经到访过 iam SSO 页面。只有"曾去过 SSO + 现在回到 1.tongji.edu.cn"
-    /// 才视作真正的登录成功，避免初次 load workbench 时被误判。
     private var hasVisitedSSO = false
     private var tongjiExtracted = false
     private var tongjiExtractionTask: Task<Void, Never>?
-    private var starCaptureTask: Task<Void, Never>?
     private var urlObservation: NSKeyValueObservation?
 
     public init(store: CredentialStore = .shared) {
         self.store = store
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
-        // 桌面 UA 可避免一些移动版页面引导，但同济 SSO 移动适配较好，先保持默认。
         self.webView = WKWebView(frame: .zero, configuration: config)
         super.init()
         self.webView.navigationDelegate = self
@@ -83,8 +70,6 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
         tongjiExtracted = false
         tongjiExtractionTask?.cancel()
         tongjiExtractionTask = nil
-        starCaptureTask?.cancel()
-        starCaptureTask = nil
 
         let dataStore = webView.configuration.websiteDataStore
         let dataTypes: Set<String> = [
@@ -112,21 +97,23 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
 
     // MARK: - URL 路由判定
 
-    /// 用户是否当前停留在一系统主站（登录完成的标志页）。
-    private func isOnTongjiMainSite(_ url: URL) -> Bool {
-        guard let host = url.host?.lowercased() else { return false }
-        return host == "1.tongji.edu.cn"
+    /// 是否到达了真正的 workbench SPA 页面（排除所有中间跳板）。
+    private func isOnTongjiWorkbench(_ url: URL) -> Bool {
+        guard let host = url.host?.lowercased(), host == "1.tongji.edu.cn" else {
+            return false
+        }
+        let path = url.path.lowercased()
+        // 中间页排除清单
+        if path.hasPrefix("/api/") { return false }
+        if path.hasPrefix("/ssologin") { return false }
+        if path.hasPrefix("/idp/") { return false }
+        // 只认 workbench
+        return path.hasPrefix("/workbench") || path == "/" || path.isEmpty
     }
 
     private func isOnSSO(_ url: URL) -> Bool {
         guard let host = url.host?.lowercased() else { return false }
         return host == "iam.tongji.edu.cn" || host == "ids.tongji.edu.cn"
-    }
-
-    private func isStarURL(_ url: URL) -> Bool {
-        guard let host = url.host?.lowercased() else { return false }
-        return host == "star.tongji.edu.cn"
-            && !url.path.lowercased().contains("/login")
     }
 
     private func handleURLChange(_ url: URL) {
@@ -140,94 +127,90 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
             return
         }
 
-        // 卓越星阶段
-        if tongjiExtracted && isStarURL(url) {
-            startStarCapture()
-            return
-        }
-
-        // 一系统抽取阶段：必须先去过 SSO，再回到 1.tongji.edu.cn 才认为登录完成
-        if !tongjiExtracted && hasVisitedSSO && isOnTongjiMainSite(url) {
+        // 必须满足三个条件：去过 SSO + 现在到了真正 workbench + 还没抽过
+        if !tongjiExtracted && hasVisitedSSO && isOnTongjiWorkbench(url) {
             startTongjiExtraction()
         }
     }
 
-    // MARK: - 阶段 1：提取一系统凭证
+    // MARK: - 一系统凭证抽取
 
     private func startTongjiExtraction() {
         guard tongjiExtractionTask == nil else { return }
         stage = .extractingTongji
-        log("登录回调已检测到，启动一系统凭证抽取")
+        log("workbench 已就绪，启动一系统凭证抽取")
 
         tongjiExtractionTask = Task { @MainActor in
-            // SPA bootstrap 时间
-            try? await Task.sleep(nanoseconds: 1_200_000_000)
-            await extractTongjiCredentialsWithRetry()
+            // 给 SPA bootstrap 一些时间，再开始轮询 sessiondata
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            await extractWithRetry()
             self.tongjiExtractionTask = nil
         }
     }
 
-    private func extractTongjiCredentialsWithRetry() async {
-        // 8 次轮询（约 8 秒），覆盖一系统 SPA 的 bootstrap 时间窗口
-        for attempt in 1...8 {
+    private func extractWithRetry() async {
+        // 12 次轮询（约 12 秒）覆盖 SPA bootstrap 时间窗口
+        for attempt in 1...12 {
             log("一系统抽取尝试 #\(attempt)")
-            if await tryExtractOnce(attempt: attempt) {
+            if await tryExtractOnce() {
                 tongjiExtracted = true
-                log("一系统凭证抽取完成，开始跳转 STAR")
-                stage = .capturingStarToken
-                webView.load(URLRequest(url: starLandingURL))
+                log("一系统凭证抽取完成 ✅")
+                stage = .finished
                 return
             }
             try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
-        log("一系统抽取失败：8 秒内未能拿到完整凭证")
-        stage = .failed("登录信息获取超时，请退出后重试")
+        log("一系统抽取失败：12 秒内 sessiondata.uid 始终为空")
+        stage = .failed("无法获取登录信息，请退出后重试")
     }
 
-    /// 单次抽取尝试。Cookie 和 sessiondata 都必须就绪才视作成功。
-    private func tryExtractOnce(attempt: Int) async -> Bool {
+    /// 单次抽取：Cookie + sessiondata（含 uid）都到位才算成功。
+    private func tryExtractOnce() async -> Bool {
         let cookieStr = await tryGetCookieString()
         guard let cookieStr, !cookieStr.isEmpty else {
             log("  Cookie 仍未就绪")
             return false
         }
-        log("  Cookie 已就绪 (len=\(cookieStr.count))")
 
         let sessionDataRaw = try? await webView.evaluateJavaScript("localStorage.getItem('sessiondata')")
-        guard let sessionData = JSONUtils.normalizeJavaScriptValue(sessionDataRaw) else {
-            log("  sessiondata 尚未写入 localStorage")
+        guard let sessionData = JSONUtils.normalizeJavaScriptValue(sessionDataRaw),
+              sessionData.count > 20  // 排除 "null" / "{}" 之类占位符
+        else {
+            log("  sessiondata 尚未就绪 (len=\(JSONUtils.normalizeJavaScriptValue(sessionDataRaw)?.count ?? 0))")
             return false
         }
-        log("  sessiondata 已就绪 (len=\(sessionData.count))")
 
+        // 严格校验：必须能解出非空 uid，否则 sessiondata 还没写入真数据
+        let uid = JSONUtils.extractTopLevelField(sessionData, field: "uid")
+        let aesKey = JSONUtils.extractTopLevelField(sessionData, field: "aesKey")
+        let aesIv = JSONUtils.extractTopLevelField(sessionData, field: "aesIv")
+        guard let uid, !uid.isEmpty, let aesKey, !aesKey.isEmpty, let aesIv, !aesIv.isEmpty else {
+            log("  sessiondata 缺字段 uid=\(uid?.isEmpty == false) aesKey=\(aesKey?.isEmpty == false) aesIv=\(aesIv?.isEmpty == false)")
+            return false
+        }
+
+        log("  Cookie/sessiondata/uid/aesKey/aesIv 全部就绪")
+
+        // 全部就绪，存盘
         store.set(cookieStr, for: CredentialStore.Keys.tongjiCookies)
+        store.set(uid, for: CredentialStore.Keys.tongjiUid)
+        store.set(aesKey, for: CredentialStore.Keys.tongjiAesKey)
+        store.set(aesIv, for: CredentialStore.Keys.tongjiAesIv)
 
         if let sessionId = await trySessionId() {
             store.set(sessionId, for: CredentialStore.Keys.tongjiSessionId)
             log("  sessionId(X-Token) 已存储")
-        } else {
-            log("  sessionId(X-Token) 未取到（某些后端不强制此头，先继续）")
         }
 
-        let uid = JSONUtils.extractTopLevelField(sessionData, field: "uid")
-        let aesKey = JSONUtils.extractTopLevelField(sessionData, field: "aesKey")
-        let aesIv = JSONUtils.extractTopLevelField(sessionData, field: "aesIv")
-        log("  uid=\(uid != nil) aesKey=\(aesKey != nil) aesIv=\(aesIv != nil)")
-
-        if let uid { store.set(uid, for: CredentialStore.Keys.tongjiUid) }
-        if let aesKey { store.set(aesKey, for: CredentialStore.Keys.tongjiAesKey) }
-        if let aesIv { store.set(aesIv, for: CredentialStore.Keys.tongjiAesIv) }
-
-        if let uid, let aesKey, let aesIv {
-            do {
-                let studentCode = try StudentCodeCipher.encryptStudentCode(
-                    uid: uid, aesKey: aesKey, aesIv: aesIv
-                )
-                store.set(studentCode, for: CredentialStore.Keys.tongjiStudentCode)
-                log("  studentCode 已加密并存储")
-            } catch {
-                log("  studentCode 加密失败: \(error)")
-            }
+        do {
+            let studentCode = try StudentCodeCipher.encryptStudentCode(
+                uid: uid, aesKey: aesKey, aesIv: aesIv
+            )
+            store.set(studentCode, for: CredentialStore.Keys.tongjiStudentCode)
+            log("  studentCode 已加密并存储")
+        } catch {
+            log("  studentCode 加密失败: \(error)")
+            return false
         }
         return true
     }
@@ -254,7 +237,6 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
             return s
         }
 
-        // 原生 WKHTTPCookieStore 回退（HttpOnly 场景必备）
         let nativeCookies = await webView.configuration.websiteDataStore.httpCookieStore.allCookies()
         let tongjiCookies = nativeCookies.filter { $0.domain.contains("tongji.edu.cn") }
         if !tongjiCookies.isEmpty {
@@ -277,83 +259,6 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
             }
         }
         return nil
-    }
-
-    // MARK: - 阶段 2：抓 STAR Bearer Token
-
-    private func startStarCapture() {
-        guard starCaptureTask == nil else { return }
-        log("开始 STAR Bearer Token 抓取")
-        starCaptureTask = Task { @MainActor in
-            await captureStarToken()
-            self.starCaptureTask = nil
-        }
-    }
-
-    private func captureStarToken() async {
-        try? await Task.sleep(nanoseconds: 1_500_000_000)
-
-        _ = try? await webView.evaluateJavaScript(
-            "XMLHttpRequest.prototype.sH=XMLHttpRequest.prototype.setRequestHeader"
-        )
-        _ = try? await webView.evaluateJavaScript(
-            "window.__fn=String.fromCharCode(102,117,110,99,116,105,111,110)"
-        )
-        _ = try? await webView.evaluateJavaScript("window.__xf=window.__fn+'(k,v){'")
-        _ = try? await webView.evaluateJavaScript(
-            "window.__xf+='if(k.toLowerCase()==\"authorization\")window.__xhr_t=v;'"
-        )
-        _ = try? await webView.evaluateJavaScript(
-            "window.__xf+='return this.sH.apply(this,arguments)}'"
-        )
-        _ = try? await webView.evaluateJavaScript("window.__xhr_t=''")
-        _ = try? await webView.evaluateJavaScript(
-            "window.__xa='XMLHttpRequest.prototype.setRequestHeader='"
-        )
-        _ = try? await webView.evaluateJavaScript("eval(window.__xa+window.__xf)")
-        log("STAR XHR 拦截器已注入")
-
-        let uniRaw = try? await webView.evaluateJavaScript(
-            "typeof uni!=='undefined'&&uni.request?1:0"
-        )
-        if JSONUtils.normalizeJavaScriptValue(uniRaw) == "1" {
-            _ = try? await webView.evaluateJavaScript("window.__uc={}")
-            _ = try? await webView.evaluateJavaScript(
-                "window.__uc.url='/api/app-api/activity/index/list'"
-            )
-            _ = try? await webView.evaluateJavaScript(
-                "window.__uc.data={pageNo:1,pageSize:1,recommend:1}"
-            )
-            _ = try? await webView.evaluateJavaScript(
-                "window.__uc.success=eval(window.__fn+'(r){window.__fb=JSON.stringify(r.data)}')"
-            )
-            _ = try? await webView.evaluateJavaScript("uni.request(window.__uc)")
-            log("STAR uni.request 已主动触发")
-        }
-        _ = try? await webView.evaluateJavaScript(
-            "location.hash='__probe__'+Date.now()"
-        )
-
-        for attempt in 0..<10 {
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            if let raw = try? await webView.evaluateJavaScript("window.__xhr_t||''"),
-               let token = JSONUtils.normalizeJavaScriptValue(raw), !token.isEmpty {
-                let stripped = stripBearerPrefix(token)
-                store.set(stripped, for: CredentialStore.Keys.starBearerToken)
-                log("STAR Bearer Token 已抓到 (\(attempt + 1)s, len=\(stripped.count))")
-                stage = .finished
-                return
-            }
-        }
-        log("STAR Token 抓取超时，但一系统已就绪，登录视为完成")
-        stage = .finished
-    }
-
-    private func stripBearerPrefix(_ token: String) -> String {
-        if token.lowercased().hasPrefix("bearer ") {
-            return String(token.dropFirst(7))
-        }
-        return token
     }
 }
 

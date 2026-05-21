@@ -4,13 +4,18 @@ import Foundation
 ///
 /// 移植自 wish_drom `TongjiScheduleProvider.FetchDataAsync` /
 /// `FetchCalendarIdAsync`：
-/// - `GET /api/baseresservice/schoolCalendar/currentTermCalendar` → 当前学期 calendarId
-/// - `GET /api/electionservice/reportManagement/findStudentTimetab?...` → 课表原始 JSON
+/// - `GET https://1.tongji.edu.cn/api/baseresservice/schoolCalendar/currentTermCalendar` → 当前学期 calendarId
+/// - `GET https://1.tongji.edu.cn/api/electionservice/reportManagement/findStudentTimetab?...` → 课表原始 JSON
 ///
 /// 鉴权：`Cookie` + `X-Token: <sessionid>`。
+///
+/// 注意：wish_drom 中 BaseAddress 写的是 `https://1.tongji.edu.cn/workbench`，
+/// 但 C# `HttpClient` 在相对路径以 `/` 开头时会丢弃 base 的 path，最终请求
+/// 的是 `https://1.tongji.edu.cn/api/...`（**没有 /workbench 前缀**）。
+/// 真实抓包确认这是后端实际的 API 路径。
 public final class CourseAPI {
 
-    private let apiBase = URL(string: "https://1.tongji.edu.cn/workbench")!
+    private let apiHost = "https://1.tongji.edu.cn"
     private let store: CredentialStore
     private let session: URLSession
 
@@ -45,7 +50,7 @@ public final class CourseAPI {
         let calendarParam = (calendarId ?? "").addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
         // studentCode 已经过 encodeURIComponent，再次百分号编码会出错，故手动拼接 query。
         let finalURL = URL(string:
-            "\(apiBase.absoluteString)/api/electionservice/reportManagement/findStudentTimetab" +
+            "\(apiHost)/api/electionservice/reportManagement/findStudentTimetab" +
             "?calendarId=\(calendarParam)&studentCode=\(studentCode)&_t=\(timestamp)"
         )!
 
@@ -65,7 +70,7 @@ public final class CourseAPI {
     public func fetchCalendarId(cookie: String, sessionId: String) async throws -> String? {
         let timestamp = Int(Date().timeIntervalSince1970 * 1000)
         let url = URL(string:
-            "\(apiBase.absoluteString)/api/baseresservice/schoolCalendar/currentTermCalendar?_t=\(timestamp)"
+            "\(apiHost)/api/baseresservice/schoolCalendar/currentTermCalendar?_t=\(timestamp)"
         )!
         var request = URLRequest(url: url)
         applyAuthHeaders(&request, cookie: cookie, sessionId: sessionId)

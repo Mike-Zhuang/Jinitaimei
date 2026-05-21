@@ -2,7 +2,7 @@
 
 一个面向同济大学学生的开源 iOS App，仅支持 iPhone（不支持 iPad / Mac / watchOS）。当前为 v0.1.0 早期版本，按"逐步开发"的方式从最小可用功能开始迭代。
 
-> Jinitaimei 在架构与 UI 设计上重度参考了复旦大学的优秀开源项目 [DanXi](https://github.com/DanXi-Dev/DanXi)（Flutter）与 [DanXi-swift](https://github.com/DanXi-Dev/DanXi-swift)（SwiftUI 重写版）；同济业务数据抓取逻辑参考了同一作者的 .NET MAUI 原型 [wish_drom](../wish_drom)。在此致谢上游项目。
+> Jinitaimei 在架构与 UI 设计上重度参考了复旦大学的优秀开源项目 [DanXi](https://github.com/DanXi-Dev/DanXi)（Flutter）与 [DanXi-swift](https://github.com/DanXi-Dev/DanXi-swift)（SwiftUI 重写版）；同济业务数据抓取逻辑参考了作者所在团队的 .NET MAUI 原型 [wish_drom](https://github.com/wyyyz1937365497/wish_drom)。在此致谢上游项目。
 
 ## 当前已实现功能
 
@@ -129,7 +129,7 @@ xcodebuild \
 
 - 复旦 DanXi（Flutter）：<https://github.com/DanXi-Dev/DanXi>
 - 复旦 DanXi-swift（SwiftUI）：<https://github.com/DanXi-Dev/DanXi-swift>
-- 同济 wish_drom（.NET MAUI 原型，本仓库内的 [../wish_drom](../wish_drom)）
+- 同济 wish_drom（.NET MAUI 原型， [wish_drom](https://github.com/wyyyz1937365497/wish_drom)）
 
 > 本项目源代码均为重写而成，未直接复制上游代码。借鉴部分主要在：架构分层（DanXi-swift 的 `Fudan Kit` + `FudanUI` 双 Package 拆分）、信息架构（"校园服务首页 + 可点开列表"模式）、SwiftUI 视图组织与 WKWebView SSO 登录交互。
 
