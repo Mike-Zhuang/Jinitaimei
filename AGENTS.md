@@ -85,3 +85,16 @@ App (Jinitaimei target)  ──►  TongjiUI  ──►  TongjiKit
     -configuration Debug build CODE_SIGNING_ALLOWED=NO
   ```
 - 暂未引入测试 target；后续若需测试，在各 SPM Package 内加 `Tests/<Module>Tests/` 即可。
+
+## 8. 通知与远程推送计划
+
+- 当前阶段先做本地通知：App 启动、回前台、用户手动刷新或系统允许的运行窗口内检测教务通知和卓越星变化，再投递 `UNUserNotificationCenter` 本地通知。
+- APNs 远程推送暂缓：需要付费 Apple Developer Program、Push Notifications capability、`aps-environment` entitlement 和 APNs Auth Key (`.p8`) 后再开启。
+- 未来推送服务域名固定为 `https://tjpush.mikezhuang.cn`；服务端进程只监听 `127.0.0.1:31080`，由宝塔 / Nginx 反向代理到公网 HTTPS。
+- APNs `.p8`、服务端 `.env`、SMTP 密码、Cookie / Token、服务端加密主密钥等敏感信息**绝不入库**，只允许放在服务器环境变量或 `/opt/jinitaimei-push/.env` 一类未纳入 git 的文件中。
+- 在 APNs 可用前，可以用邮件通知作为远程提醒替代方案：
+  - 发送账号使用自运营腾讯企业邮，SMTP 主机为 `smtp.exmail.qq.com`，SSL 端口 `465`。
+  - 代码和文档只能写环境变量名，例如 `SMTP_HOST`、`SMTP_PORT`、`SMTP_USERNAME`、`SMTP_PASSWORD`、`SMTP_FROM`，不得写真实密码。
+  - App 内允许用户填写接收通知的邮箱地址；服务端用该地址发送教务通知和卓越星提醒邮件。
+  - 邮件服务端仍需保存用户通知偏好、邮箱地址、检测基线和必要的一系统凭证；所有凭证必须服务端加密保存，且日志中不得输出。
+- 如果后续新建后端仓库，建议仓库只保存服务端源码和 `.env.example`，真实 `.env` 仍留在服务器；宝塔自动同步脚本只能拉取源码，不得覆盖服务器本地密钥文件。

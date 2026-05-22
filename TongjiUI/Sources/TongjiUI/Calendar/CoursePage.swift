@@ -275,8 +275,11 @@ private struct CourseExportSheet: View {
     @State private var showPermissionDeniedAlert = false
     @State private var showExportError = false
     @State private var exportErrorMessage = ""
+    @State private var selectedAlarmMinutes = Set<Int>()
 
     private let eventStore = EKEventStore()
+    private let alarmOptions = [5, 10, 15, 30, 60]
+    private let alarmDefaultsKey = "courseExportAlarmOffsetsMinutes"
 
     private var allSelected: Bool {
         !allKeys.isEmpty && selectedKeys.count == allKeys.count
@@ -284,14 +287,53 @@ private struct CourseExportSheet: View {
 
     var body: some View {
         NavigationStack {
-            List(allKeys, selection: $selectedKeys) { key in
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(key.courseName)
-                    Text(detailText(for: key))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            List(selection: $selectedKeys) {
+                Section("课程") {
+                    ForEach(allKeys) { key in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(key.courseName)
+                            Text(detailText(for: key))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .tag(key)
+                    }
                 }
-                .tag(key)
+
+                Section {
+                    Button {
+                        selectedAlarmMinutes.removeAll()
+                        saveAlarmSelection()
+                    } label: {
+                        HStack {
+                            Text("无提醒")
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            if selectedAlarmMinutes.isEmpty {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+
+                    ForEach(alarmOptions, id: \.self) { minutes in
+                        Button {
+                            toggleAlarm(minutes)
+                        } label: {
+                            HStack {
+                                Text("课前 \(minutes) 分钟")
+                                    .foregroundStyle(.primary)
+                                Spacer()
+                                if selectedAlarmMinutes.contains(minutes) {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                } header: {
+                    Text("课前提醒")
+                } footer: {
+                    Text("会把所选提醒写入每一个导出的课程事件。")
+                }
             }
             .environment(\.editMode, .constant(.active))
             .navigationTitle("导出到日历")
@@ -306,6 +348,7 @@ private struct CourseExportSheet: View {
                         return lhs.courseName < rhs.courseName
                     }
                 selectedKeys = Set(allKeys)
+                loadAlarmSelection()
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -387,13 +430,32 @@ private struct CourseExportSheet: View {
                 selectedKeys: selectedKeys,
                 semesterStart: semesterStart,
                 to: calendar,
-                eventStore: eventStore
+                eventStore: eventStore,
+                alarmOffsetsMinutes: selectedAlarmMinutes
             )
             dismiss()
         } catch {
             exportErrorMessage = error.localizedDescription
             showExportError = true
         }
+    }
+
+    private func loadAlarmSelection() {
+        let stored = UserDefaults.standard.array(forKey: alarmDefaultsKey) as? [Int]
+        selectedAlarmMinutes = Set(stored ?? [15, 30])
+    }
+
+    private func saveAlarmSelection() {
+        UserDefaults.standard.set(selectedAlarmMinutes.sorted(), forKey: alarmDefaultsKey)
+    }
+
+    private func toggleAlarm(_ minutes: Int) {
+        if selectedAlarmMinutes.contains(minutes) {
+            selectedAlarmMinutes.remove(minutes)
+        } else {
+            selectedAlarmMinutes.insert(minutes)
+        }
+        saveAlarmSelection()
     }
 }
 

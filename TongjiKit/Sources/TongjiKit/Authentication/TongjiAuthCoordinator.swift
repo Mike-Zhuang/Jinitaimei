@@ -154,12 +154,30 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
             silentRenewContinuation = continuation
             webView.load(URLRequest(url: tongjiLandingURL))
 
+            // 如果 4 秒后仍停在 IAM/IDS，说明 SSO 需要交互，不必继续在隐藏页里轮询 sessiondata。
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                guard let self,
+                      self.currentMode == .silent,
+                      let url = self.webView.url,
+                      self.isOnSSO(url),
+                      let c = self.silentRenewContinuation else { return }
+                self.silentRenewContinuation = nil
+                self.extractionTask?.cancel()
+                self.extractionTask = nil
+                self.log("静默续期停在 SSO，提前判失败")
+                self.stage = .failed("需要交互登录")
+                c.resume(returning: false)
+            }
+
             // 总预算：12 秒（IAM 跳一两跳 + SPA bootstrap + 抽取轮询）
             Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: 12_000_000_000)
                 guard let self else { return }
                 if let c = self.silentRenewContinuation {
                     self.silentRenewContinuation = nil
+                    self.extractionTask?.cancel()
+                    self.extractionTask = nil
                     self.log("静默续期总预算耗尽，判失败")
                     self.stage = .failed("静默续期超时")
                     c.resume(returning: false)
@@ -187,11 +205,13 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
 
         webView.load(URLRequest(url: tongjiLandingURL))
 
-        // 监听 5 秒：如果到了 IAM 表单页面就注入填表
+        // 监听 5 秒：如果到了 IAM 表单页面就注入填表。提交一次即可，避免重复点击。
+        var didSubmit = false
         for _ in 0..<25 {
             try? await Task.sleep(nanoseconds: 200_000_000)
-            if let url = webView.url, isOnSSO(url) {
+            if !didSubmit, let url = webView.url, isOnSSO(url) {
                 if try await detectMFAOrFillAndSubmit(username: username, password: password) {
+                    didSubmit = true
                     break
                 }
             }
@@ -209,6 +229,8 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
                 guard let self else { return }
                 if let c = self.silentRenewContinuation {
                     self.silentRenewContinuation = nil
+                    self.extractionTask?.cancel()
+                    self.extractionTask = nil
                     self.log("密码回填总预算耗尽，判失败")
                     self.stage = .failed("密码回填超时")
                     c.resume(returning: false)
@@ -264,6 +286,14 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
             guard let self else { return false }
             // SPA bootstrap 缓冲
             try? await Task.sleep(nanoseconds: 1_500_000_000)
+            if let url = self.webView.url, !self.isOnTongjiWorkbench(url) {
+                self.log("抽取前已离开 workbench，当前 \(url.absoluteString)")
+                self.extractionTask = nil
+                if self.currentMode == .silent {
+                    self.finishCurrentMode(success: false)
+                }
+                return false
+            }
             let ok = await self.extractWithRetry()
             self.extractionTask = nil
             self.finishCurrentMode(success: ok)
@@ -428,34 +458,39 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
 
     /// 返回 true 表示已经提交了表单；false 表示页面还没准备好。
     private func detectMFAOrFillAndSubmit(username: String, password: String) async throws -> Bool {
-        // MFA / 验证码探测
-        let mfaProbeJS = """
+        // 先看是否有"可见"账号密码框。统一认证页经常预埋隐藏的 code/otp 字段，
+        // 如果先扫 OTP 很容易误判成二次验证。
+        let pageProbeJS = """
         (function() {
             try {
-                var hasCaptcha = !!document.querySelector('img[id*="captcha" i], img[src*="captcha" i], input[name*="captcha" i], #captcha, .captcha');
-                var hasOtp = !!document.querySelector('input[name*="otp" i], input[name*="sms" i], input[name*="code" i][maxlength="6"]');
+                function visible(el) {
+                    if (!el || el.disabled || el.type === 'hidden') return false;
+                    var style = window.getComputedStyle(el);
+                    if (!style || style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                    var rect = el.getBoundingClientRect();
+                    return rect.width > 0 && rect.height > 0;
+                }
+                function firstVisible(selector) {
+                    var nodes = Array.prototype.slice.call(document.querySelectorAll(selector));
+                    return nodes.find(visible) || null;
+                }
+                var user = firstVisible('input[name="j_username"], input[name="username"], input[id="username"], input[type="text"], input[type="tel"]');
+                var pass = firstVisible('input[name="j_password"], input[name="password"], input[id="password"], input[type="password"]');
+                var captcha = firstVisible('img[id*="captcha" i], img[src*="captcha" i], input[name*="captcha" i], #captcha, .captcha input');
+                var otp = firstVisible('input[name*="otp" i], input[name*="sms" i], input[name*="code" i][maxlength="6"]');
                 var urlHasMfa = /captcha|mfa|otp|second/i.test(location.pathname + location.search);
-                return JSON.stringify({ captcha: hasCaptcha, otp: hasOtp, urlMfa: urlHasMfa });
+                return JSON.stringify({
+                    formReady: !!(user && pass),
+                    captcha: !!captcha,
+                    otp: !!otp,
+                    urlMfa: urlHasMfa
+                });
             } catch (e) { return ''; }
         })()
         """
-        if let raw = try? await webView.evaluateJavaScript(mfaProbeJS),
-           let s = JSONUtils.normalizeJavaScriptValue(raw),
-           s.contains("\"captcha\":true") || s.contains("\"otp\":true") || s.contains("\"urlMfa\":true") {
-            log("  检测到 MFA / 验证码：\(s)")
-            throw AuthError.mfaRequired("学校 SSO 当前要求图形验证码或二次验证，已自动切换为手动登录")
-        }
-
-        // 检查输入框存在性
-        let probeFormJS = """
-        (function() {
-            var u = document.querySelector('input[name="j_username"], input[name="username"], input[id="username"]');
-            var p = document.querySelector('input[name="j_password"], input[name="password"], input[id="password"]');
-            return (u && p) ? '1' : '0';
-        })()
-        """
-        let probeRaw = try? await webView.evaluateJavaScript(probeFormJS)
-        let formReady = JSONUtils.normalizeJavaScriptValue(probeRaw) == "1"
+        let probeRaw = try? await webView.evaluateJavaScript(pageProbeJS)
+        let probe = JSONUtils.normalizeJavaScriptValue(probeRaw) ?? ""
+        let formReady = probe.contains("\"formReady\":true")
         guard formReady else { return false }
 
         // 注入填表并提交
@@ -463,8 +498,19 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
         let safePwd = escapeForJSString(password)
         let fillJS = """
         (function() {
+            function visible(el) {
+                if (!el || el.disabled || el.type === 'hidden') return false;
+                var style = window.getComputedStyle(el);
+                if (!style || style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                var rect = el.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0;
+            }
+            function firstVisible(selector) {
+                var nodes = Array.prototype.slice.call(document.querySelectorAll(selector));
+                return nodes.find(visible) || null;
+            }
             function fill(sel, val) {
-                var el = document.querySelector(sel);
+                var el = firstVisible(sel);
                 if (!el) return false;
                 el.focus();
                 el.value = val;
@@ -474,7 +520,9 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
             }
             var u = fill('input[name="j_username"]', '\(safeUser)') ||
                     fill('input[name="username"]', '\(safeUser)') ||
-                    fill('input[id="username"]', '\(safeUser)');
+                    fill('input[id="username"]', '\(safeUser)') ||
+                    fill('input[type="text"]', '\(safeUser)') ||
+                    fill('input[type="tel"]', '\(safeUser)');
             var p = fill('input[name="j_password"]', '\(safePwd)') ||
                     fill('input[name="password"]', '\(safePwd)') ||
                     fill('input[id="password"]', '\(safePwd)');
@@ -487,9 +535,12 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
             return false;
         })()
         """
-        _ = try? await webView.evaluateJavaScript(fillJS)
-        log("  已注入密码并提交表单")
-        return true
+        let submittedRaw = try? await webView.evaluateJavaScript(fillJS)
+        let submitted = JSONUtils.normalizeJavaScriptValue(submittedRaw) == "true"
+        if submitted {
+            log("  已注入密码并提交表单")
+        }
+        return submitted
     }
 
     private func escapeForJSString(_ s: String) -> String {

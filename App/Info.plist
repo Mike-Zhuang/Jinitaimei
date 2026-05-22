@@ -52,6 +52,8 @@
     <string>用于将课程表写入你选择的系统日历。</string>
     <key>NSCalendarsUsageDescription</key>
     <string>用于将课程表写入你选择的系统日历。</string>
+    <key>NSFaceIDUsageDescription</key>
+    <string>用于在登录态过期时解锁本机保存的校园账户自动登录凭证。</string>
     <key>NSAppTransportSecurity</key>
     <dict>
         <!--

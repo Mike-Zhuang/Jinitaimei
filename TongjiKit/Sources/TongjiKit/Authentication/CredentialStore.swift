@@ -91,12 +91,62 @@ public final class CredentialStore: @unchecked Sendable {
     /// 读取自动登录账号密码。会触发 Face ID / Touch ID 提示（reason 由调用方提供）。
     /// 返回 `nil` 表示用户未开启自动登录或验证失败。
     public func loadAutoLoginCredentials(reason: String) async -> AutoLoginCredentials? {
-        async let userTask = readBiometryProtected(key: Keys.autoLoginUser, reason: reason)
-        async let pwdTask = readBiometryProtected(key: Keys.autoLoginPassword, reason: reason)
-        let user = await userTask
-        let pwd = await pwdTask
-        guard let user, !user.isEmpty, let pwd, !pwd.isEmpty else { return nil }
-        return AutoLoginCredentials(user: user, password: pwd)
+        let serviceCopy = service
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let context = LAContext()
+                context.localizedReason = reason
+
+                // 账号和密码都受同一套生物识别策略保护。必须复用同一个 LAContext
+                // 顺序读取，否则系统可能弹两次 Face ID，第二次读会被取消或判失败。
+                let user = Self.readBiometryProtectedSync(
+                    key: Keys.autoLoginUser,
+                    service: serviceCopy,
+                    context: context
+                )
+                let password = Self.readBiometryProtectedSync(
+                    key: Keys.autoLoginPassword,
+                    service: serviceCopy,
+                    context: context
+                )
+                guard let user, !user.isEmpty,
+                      let password, !password.isEmpty else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                continuation.resume(returning: AutoLoginCredentials(user: user, password: password))
+            }
+        }
+    }
+
+    private static func readBiometryProtectedSync(key: String, service: String, context: LAContext) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationContext as String: context
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess, let data = item as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private func readBiometryProtected(key: String, reason: String) async -> String? {
+        let serviceCopy = service
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let context = LAContext()
+                context.localizedReason = reason
+                continuation.resume(returning: Self.readBiometryProtectedSync(
+                    key: key,
+                    service: serviceCopy,
+                    context: context
+                ))
+            }
+        }
     }
 
     /// 不读 value、不触发 Face ID 弹窗，仅检查 Keychain 中是否存在自动登录条目。
@@ -155,31 +205,6 @@ public final class CredentialStore: @unchecked Sendable {
                 domain: NSOSStatusErrorDomain, code: Int(status),
                 userInfo: [NSLocalizedDescriptionKey: "Keychain 写入失败 (\(status))"]
             )
-        }
-    }
-
-    private func readBiometryProtected(key: String, reason: String) async -> String? {
-        let serviceCopy = service
-        return await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let context = LAContext()
-                context.localizedReason = reason
-                let query: [String: Any] = [
-                    kSecClass as String: kSecClassGenericPassword,
-                    kSecAttrService as String: serviceCopy,
-                    kSecAttrAccount as String: key,
-                    kSecReturnData as String: true,
-                    kSecMatchLimit as String: kSecMatchLimitOne,
-                    kSecUseAuthenticationContext as String: context
-                ]
-                var item: CFTypeRef?
-                let status = SecItemCopyMatching(query as CFDictionary, &item)
-                if status == errSecSuccess, let data = item as? Data {
-                    continuation.resume(returning: String(data: data, encoding: .utf8))
-                } else {
-                    continuation.resume(returning: nil)
-                }
-            }
         }
     }
 

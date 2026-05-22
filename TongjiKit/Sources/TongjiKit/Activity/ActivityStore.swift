@@ -43,6 +43,7 @@ public final class ActivityStore: ObservableObject {
             }
             try context.save()
             loadFromLocal()
+            await CampusNotificationDetector.shared.processStarActivities(activities)
         } catch let err as AuthError {
             lastError = err.errorDescription
         } catch {

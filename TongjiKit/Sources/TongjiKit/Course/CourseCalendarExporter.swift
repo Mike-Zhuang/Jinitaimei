@@ -44,12 +44,20 @@ public enum CourseCalendarExporter {
         selectedKeys: Set<CourseExportKey>,
         semesterStart: Date,
         to calendar: EKCalendar,
-        eventStore: EKEventStore
+        eventStore: EKEventStore,
+        alarmOffsetsMinutes: Set<Int> = []
     ) throws {
         let map = calendarMap(for: schedules)
         for key in selectedKeys {
             guard let courses = map[key] else { continue }
-            try export(courses: courses, key: key, semesterStart: semesterStart, to: calendar, eventStore: eventStore)
+            try export(
+                courses: courses,
+                key: key,
+                semesterStart: semesterStart,
+                to: calendar,
+                eventStore: eventStore,
+                alarmOffsetsMinutes: alarmOffsetsMinutes
+            )
         }
         try eventStore.commit()
     }
@@ -59,7 +67,8 @@ public enum CourseCalendarExporter {
         key: CourseExportKey,
         semesterStart: Date,
         to calendar: EKCalendar,
-        eventStore: EKEventStore
+        eventStore: EKEventStore,
+        alarmOffsetsMinutes: Set<Int>
     ) throws {
         let weeks = Array(Set(courses.map(\.weekNumber))).sorted()
         guard let firstWeek = weeks.first else { return }
@@ -71,7 +80,8 @@ public enum CourseCalendarExporter {
                 week: firstWeek,
                 semesterStart: semesterStart,
                 calendar: calendar,
-                eventStore: eventStore
+                eventStore: eventStore,
+                alarmOffsetsMinutes: alarmOffsetsMinutes
             )
             event.addRecurrenceRule(
                 EKRecurrenceRule(
@@ -89,7 +99,8 @@ public enum CourseCalendarExporter {
                     week: week,
                     semesterStart: semesterStart,
                     calendar: calendar,
-                    eventStore: eventStore
+                    eventStore: eventStore,
+                    alarmOffsetsMinutes: alarmOffsetsMinutes
                 )
                 try eventStore.save(event, span: .thisEvent, commit: false)
             }
@@ -111,7 +122,8 @@ public enum CourseCalendarExporter {
         week: Int,
         semesterStart: Date,
         calendar: EKCalendar,
-        eventStore: EKEventStore
+        eventStore: EKEventStore,
+        alarmOffsetsMinutes: Set<Int>
     ) -> EKEvent {
         let event = EKEvent(eventStore: eventStore)
         event.title = key.courseName
@@ -124,6 +136,9 @@ public enum CourseCalendarExporter {
         .joined(separator: "\n")
         (event.startDate, event.endDate) = computeTime(for: key, week: week, semesterStart: semesterStart)
         event.calendar = calendar
+        for minutes in alarmOffsetsMinutes.sorted() where minutes > 0 {
+            event.addAlarm(EKAlarm(relativeOffset: TimeInterval(-minutes * 60)))
+        }
         return event
     }
 

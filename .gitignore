@@ -71,6 +71,10 @@ ExportOptions.plist
 .env
 .env.*
 !.env.example
+*.p8
+*.apnskey
+secrets/
+server/secrets/
+jinitaimei-push.env
 
 temp_plans
-

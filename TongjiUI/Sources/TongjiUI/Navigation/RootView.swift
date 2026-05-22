@@ -11,6 +11,7 @@ import TongjiKit
 public struct RootView: View {
 
     @StateObject private var campusModel = CampusModel.shared
+    @StateObject private var loginPresenter = LoginPresentationModel.shared
     @Environment(\.scenePhase) private var scenePhase
 
     public init() {}
@@ -39,13 +40,29 @@ public struct RootView: View {
                 .frame(width: 0, height: 0)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
+
+            // STAR 续期也依赖 WebView 跑 OAuth 跳转 / XHR 拦截，同样需要挂在视图树上。
+            HiddenWebViewHost(webView: StarAuthCoordinator.shared.webView)
+                .frame(width: 0, height: 0)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
         }
         .task {
             campusModel.refresh()
         }
+        .fullScreenCover(isPresented: $loginPresenter.isPresented) {
+            LoginPage {
+                loginPresenter.dismiss()
+                campusModel.refresh()
+            }
+        }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
                 campusModel.performScenePhaseCheckIfDue()
+                Task {
+                    await LocalNotificationManager.shared.refreshAuthorizationStatus()
+                    await CampusNotificationDetector.shared.checkTeachingNoticesIfNeeded()
+                }
             }
         }
     }

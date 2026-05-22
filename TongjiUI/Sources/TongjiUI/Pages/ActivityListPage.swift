@@ -10,6 +10,7 @@ import TongjiKit
 public struct ActivityListPage: View {
 
     @ObservedObject private var campusModel = CampusModel.shared
+    @ObservedObject private var followStore = StarActivityFollowStore.shared
     @StateObject private var store: ActivityStore
     @State private var presentedURL: IdentifiedURL?
     @State private var showError = false
@@ -49,18 +50,32 @@ public struct ActivityListPage: View {
                     }
 
                     ForEach(filteredActivities, id: \.remoteId) { activity in
-                        Button {
-                            if let url = activityDetailURL(for: activity) {
-                                presentedURL = IdentifiedURL(url: url)
+                        HStack(alignment: .top, spacing: 10) {
+                            Button {
+                                if let url = activityDetailURL(for: activity) {
+                                    presentedURL = IdentifiedURL(url: url)
+                                }
+                            } label: {
+                                ActivityRow(activity: activity)
+                                    .padding(.vertical, 16)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
                             }
-                        } label: {
-                            ActivityRow(activity: activity)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 16)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                            .buttonStyle(.plain)
+                            .contentShape(Rectangle())
+
+                            Button {
+                                followStore.toggle(activity.remoteId)
+                            } label: {
+                                Image(systemName: followStore.isFollowed(activity.remoteId) ? "bell.fill" : "bell")
+                                    .font(.body)
+                                    .foregroundStyle(followStore.isFollowed(activity.remoteId) ? Color.orange : Color.secondary)
+                                    .frame(width: 32, height: 32)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(followStore.isFollowed(activity.remoteId) ? "取消关注活动" : "关注活动")
+                            .padding(.top, 14)
                         }
-                        .buttonStyle(.plain)
-                        .contentShape(Rectangle())
+                        .padding(.horizontal, 16)
                         ActivitySeparator()
                     }
 

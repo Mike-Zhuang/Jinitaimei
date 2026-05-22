@@ -145,6 +145,9 @@ public struct TeachingNoticePage: View {
                 }
                 notices = TeachingNotice.sortedForList(merged)
             }
+            if replacing {
+                await CampusNotificationDetector.shared.processTeachingNotices(notices)
+            }
             errorMessage = nil
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? String(describing: error)

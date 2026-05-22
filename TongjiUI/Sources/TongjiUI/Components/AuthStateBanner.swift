@@ -9,7 +9,7 @@ import TongjiKit
 public struct AuthStateBanner: View {
 
     @ObservedObject private var campusModel = CampusModel.shared
-    @State private var showLogin = false
+    @ObservedObject private var loginPresenter = LoginPresentationModel.shared
 
     public init() {}
 
@@ -24,12 +24,6 @@ public struct AuthStateBanner: View {
                 )
             } else if campusModel.requiresInteractiveLogin {
                 requiresLoginRow
-            }
-        }
-        .fullScreenCover(isPresented: $showLogin) {
-            LoginPage {
-                showLogin = false
-                campusModel.refresh()
             }
         }
     }
@@ -66,7 +60,7 @@ public struct AuthStateBanner: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
             Spacer()
-            Button("去登录") { showLogin = true }
+            Button("去登录") { loginPresenter.requestLogin() }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
         }

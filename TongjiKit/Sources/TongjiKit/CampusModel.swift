@@ -162,6 +162,7 @@ public final class CampusModel: ObservableObject {
         store.clearAll()
         CookieJar.shared.clear()
         store.removeAutoLoginCredentials()
+        CampusNotificationDetector.shared.resetBaselines()
         refresh()
     }
 }
