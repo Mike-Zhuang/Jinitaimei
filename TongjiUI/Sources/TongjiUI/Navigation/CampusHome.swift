@@ -11,6 +11,7 @@ public struct CampusHome: View {
     @ObservedObject private var campusModel = CampusModel.shared
     @StateObject private var model = CampusHomeModel()
     @State private var showEditor = false
+    @State private var refreshToken = UUID()
 
     public init() {}
 
@@ -32,7 +33,7 @@ public struct CampusHome: View {
                             NavigationLink {
                                 service.destination
                             } label: {
-                                service.card
+                                service.card(refreshToken: refreshToken)
                                     .tint(.primary)
                                     .frame(height: 85, alignment: .center)
                             }
@@ -69,6 +70,9 @@ public struct CampusHome: View {
             }
             .listStyle(.insetGrouped)
             .listSectionSpacing(.compact)
+            .refreshable {
+                await refreshCampusServices()
+            }
             .navigationTitle("校园服务")
             .toolbar {
                 if campusModel.loggedIn {
@@ -81,6 +85,25 @@ public struct CampusHome: View {
                 CampusHomeEditor(model: model)
             }
         }
+    }
+
+    private func refreshCampusServices() async {
+        campusModel.refresh()
+        guard campusModel.loggedIn else { return }
+
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { @MainActor in
+                await campusModel.refreshProfile()
+            }
+            group.addTask { @MainActor in
+                await campusModel.refreshStarScoreSummary()
+            }
+            group.addTask {
+                await CampusNotificationDetector.shared.checkTeachingNoticesIfNeeded()
+            }
+        }
+
+        refreshToken = UUID()
     }
 }
 
@@ -101,12 +124,12 @@ private enum CampusService: String, CaseIterable, Codable, Identifiable {
     }
 
     @ViewBuilder
-    var card: some View {
+    func card(refreshToken: UUID) -> some View {
         switch self {
         case .starActivity:
-            StarActivityCard()
+            StarActivityCard(refreshToken: refreshToken)
         case .teachingNotice:
-            TeachingNoticeCard()
+            TeachingNoticeCard(refreshToken: refreshToken)
         }
     }
 
@@ -248,6 +271,7 @@ private struct CampusHomeEditor: View {
 
 private struct StarActivityCard: View {
     @ObservedObject private var campusModel = CampusModel.shared
+    let refreshToken: UUID
 
     var body: some View {
         PinnedServiceCardLayout(title: "卓越星", systemImage: "star.circle.fill", color: .orange) {
@@ -291,6 +315,10 @@ private struct StarActivityCard: View {
             guard campusModel.loggedIntoStar, campusModel.starScoreSummary == nil else { return }
             await campusModel.refreshStarScoreSummary()
         }
+        .onChange(of: refreshToken) { _, _ in
+            guard campusModel.loggedIn else { return }
+            Task { await campusModel.refreshStarScoreSummary() }
+        }
     }
 
     private func compactScore(_ name: String, _ score: Double) -> some View {
@@ -307,6 +335,7 @@ private struct StarActivityCard: View {
 
 private struct TeachingNoticeCard: View {
     @ObservedObject private var campusModel = CampusModel.shared
+    let refreshToken: UUID
     @State private var latestNotice: TeachingNotice?
     @State private var isLoading = false
     @State private var errorMessage: String?
@@ -361,10 +390,17 @@ private struct TeachingNoticeCard: View {
                 Task { await loadLatestNotice() }
             }
         }
+        .onChange(of: refreshToken) { _, _ in
+            guard campusModel.loggedIn else { return }
+            Task { await loadLatestNotice(force: true) }
+        }
     }
 
-    private func loadLatestNotice() async {
+    private func loadLatestNotice(force: Bool = false) async {
         guard campusModel.loggedIn, !isLoading else { return }
+        if force {
+            errorMessage = nil
+        }
         isLoading = true
         defer { isLoading = false }
 
