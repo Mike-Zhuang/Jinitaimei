@@ -21,55 +21,72 @@ public struct ActivityListPage: View {
     }
 
     public var body: some View {
-        List {
-            if campusModel.isRefreshingAuth || campusModel.requiresInteractiveLogin {
-                AuthStateBanner()
-            }
-            if !campusModel.loggedIn {
-                ContentUnavailableView(
-                    "请先登录校园账户",
-                    systemImage: "person.crop.circle.badge.exclamationmark",
-                    description: Text("登录后可查看卓越星活动与个人星值")
-                )
-                .listEmptyRowStyle()
-            } else if let summary = campusModel.starScoreSummary {
-                Section {
-                    StarScoreSummaryView(summary: summary)
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                if campusModel.isRefreshingAuth || campusModel.requiresInteractiveLogin {
+                    AuthStateBanner()
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
                 }
-            }
 
-            if campusModel.loggedIn {
-                ForEach(filteredActivities, id: \.remoteId) { activity in
-                    Button {
-                        if let link = activity.link, let url = URL(string: link) {
-                            presentedURL = IdentifiedURL(url: url)
+                if !campusModel.loggedIn {
+                    ContentUnavailableView(
+                        "请先登录校园账户",
+                        systemImage: "person.crop.circle.badge.exclamationmark",
+                        description: Text("登录后可查看卓越星活动与个人星值")
+                    )
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 48)
+                } else {
+                    if let summary = campusModel.starScoreSummary {
+                        VStack(spacing: 0) {
+                            ActivitySeparator()
+                            StarScoreSummaryView(summary: summary)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 18)
+                            ActivitySeparator()
                         }
-                    } label: {
-                        ActivityRow(activity: activity)
                     }
-                    .buttonStyle(.plain)
-                    .activityListRowStyle()
-                }
-                if !store.isLoading {
-                    if store.activities.isEmpty {
-                        ContentUnavailableView(
-                            "暂无活动",
-                            systemImage: "star.circle",
-                            description: Text("下拉或点击右上角刷新")
-                        )
-                        .listEmptyRowStyle()
-                    } else if filteredActivities.isEmpty {
-                        ContentUnavailableView(
-                            "没有匹配活动",
-                            systemImage: "line.3.horizontal.decrease.circle",
-                            description: Text("请调整星星种类、星值、活动状态或排序条件")
-                        )
-                        .listEmptyRowStyle()
+
+                    ForEach(filteredActivities, id: \.remoteId) { activity in
+                        Button {
+                            if let url = activityDetailURL(for: activity) {
+                                presentedURL = IdentifiedURL(url: url)
+                            }
+                        } label: {
+                            ActivityRow(activity: activity)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 16)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+                        .contentShape(Rectangle())
+                        ActivitySeparator()
+                    }
+
+                    if !store.isLoading {
+                        if store.activities.isEmpty {
+                            ContentUnavailableView(
+                                "暂无活动",
+                                systemImage: "star.circle",
+                                description: Text("下拉或点击右上角刷新")
+                            )
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 48)
+                        } else if filteredActivities.isEmpty {
+                            ContentUnavailableView(
+                                "没有匹配活动",
+                                systemImage: "line.3.horizontal.decrease.circle",
+                                description: Text("请调整星星种类、星值、活动状态或排序条件")
+                            )
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 48)
+                        }
                     }
                 }
             }
         }
-        .listStyle(.plain)
+        .background(Color(uiColor: .systemBackground))
         .navigationTitle("卓越星")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -165,6 +182,16 @@ public struct ActivityListPage: View {
             }
         }
     }
+
+    private func activityDetailURL(for activity: CampusActivity) -> URL? {
+        if activity.remoteId > 0 {
+            return URL(string: "https://star.tongji.edu.cn/app/pages-home/detail/huodong?id=\(activity.remoteId)")
+        }
+        if let link = activity.link {
+            return URL(string: link)
+        }
+        return nil
+    }
 }
 
 struct ActivityRow: View {
@@ -212,18 +239,12 @@ struct ActivityRow: View {
     }
 }
 
-private extension View {
-    /// 活动列表行使用自绘分割线，避免系统 List 在 Button 行内按文本缩进导致左侧缺线。
-    func activityListRowStyle() -> some View {
-        self
+private struct ActivitySeparator: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color(uiColor: .separator).opacity(0.45))
+            .frame(height: 1 / UIScreen.main.scale)
             .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .listRowInsets(EdgeInsets())
-            .listRowSeparator(.hidden)
-            .overlay(alignment: .bottom) {
-                Divider()
-            }
     }
 }
 

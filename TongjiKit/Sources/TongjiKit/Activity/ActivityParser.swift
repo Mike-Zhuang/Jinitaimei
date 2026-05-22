@@ -72,7 +72,7 @@ public enum ActivityParser {
 
     private static func buildActivityLink(id: Int64) -> String? {
         guard id > 0 else { return nil }
-        return "https://star.tongji.edu.cn/app/pages/activity/detail?id=\(id)"
+        return "https://star.tongji.edu.cn/app/pages-home/detail/huodong?id=\(id)"
     }
 
     private static func formatPoints(_ value: Double) -> String {
