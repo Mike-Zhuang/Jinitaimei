@@ -37,6 +37,7 @@ public final class StarAuthCoordinator: NSObject, ObservableObject {
         self.store = store
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
+        config.userContentController.addUserScript(Self.starTokenInterceptorScript())
         self.webView = WKWebView(frame: .zero, configuration: config)
         super.init()
         self.webView.navigationDelegate = self
@@ -77,7 +78,15 @@ public final class StarAuthCoordinator: NSObject, ObservableObject {
     }
 
     private func tryExchangeStarSocialToken() async -> String? {
-        guard let callback = await waitForStarSocialCallback() else { return nil }
+        guard let landing = await waitForStarLanding() else { return nil }
+        guard case let .socialCallback(callback) = landing else {
+            log("STAR 已进入前端页面，改从页面请求/存储抽取 token")
+            if let token = await tryExtractStarTokenFromPage() {
+                return token
+            }
+            return nil
+        }
+
         let components = URLComponents(url: callback, resolvingAgainstBaseURL: false)
         guard let code = components?.queryItems?.first(where: { $0.name == "code" })?.value,
               let state = components?.queryItems?.first(where: { $0.name == "state" })?.value,
@@ -96,14 +105,27 @@ public final class StarAuthCoordinator: NSObject, ObservableObject {
         }
     }
 
-    private func waitForStarSocialCallback() async -> URL? {
+    private enum StarLanding {
+        case socialCallback(URL)
+        case appPage(URL)
+    }
+
+    private func waitForStarLanding() async -> StarLanding? {
         var attemptedPasswordFill = false
         for tick in 0..<18 {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             if let url = webView.url,
                url.host?.lowercased() == "star.tongji.edu.cn",
                url.path.lowercased().hasPrefix("/app/pages/login/social") {
-                return url
+                return .socialCallback(url)
+            }
+            if let url = webView.url,
+               url.host?.lowercased() == "star.tongji.edu.cn",
+               url.path.lowercased().hasPrefix("/app/") {
+                // 部分情况下 STAR 前端会直接落到 /app/，不会暴露 /login/social?code=...
+                // 这时页面脚本已经从 documentStart 开始拦截请求，直接进入页面抽取路径。
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                return .appPage(url)
             }
             if !attemptedPasswordFill,
                let url = webView.url,
@@ -172,6 +194,8 @@ public final class StarAuthCoordinator: NSObject, ObservableObject {
             var userFilled = fill('input[name="j_username"]', '\(safeUser)') ||
                              fill('input[name="username"]', '\(safeUser)') ||
                              fill('input[id="username"]', '\(safeUser)') ||
+                             fill('input[name="loginName"]', '\(safeUser)') ||
+                             fill('input[name="account"]', '\(safeUser)') ||
                              fill('input[type="text"]', '\(safeUser)') ||
                              fill('input[type="tel"]', '\(safeUser)');
             var passwordFilled = fill('input[name="j_password"]', '\(safePwd)') ||
@@ -234,41 +258,40 @@ public final class StarAuthCoordinator: NSObject, ObservableObject {
     }
 
     private func tryExtractStarTokenFromXHR() async -> String? {
+        return await tryExtractStarTokenFromPage()
+    }
+
+    private func tryExtractStarTokenFromPage() async -> String? {
         let storageProbes = [
             "localStorage.getItem('token')",
             "localStorage.getItem('access_token')",
             "localStorage.getItem('Authorization')",
+            "localStorage.getItem('ACCESS_TOKEN')",
+            "localStorage.getItem('starToken')",
+            "localStorage.getItem('vuex')",
+            "localStorage.getItem('userInfo')",
             "sessionStorage.getItem('token')",
             "sessionStorage.getItem('access_token')",
-            "sessionStorage.getItem('Authorization')"
+            "sessionStorage.getItem('Authorization')",
+            "sessionStorage.getItem('ACCESS_TOKEN')",
+            "sessionStorage.getItem('starToken')",
+            "sessionStorage.getItem('vuex')",
+            "sessionStorage.getItem('userInfo')"
         ]
         for probe in storageProbes {
             if let raw = try? await webView.evaluateJavaScript(probe),
-               let token = normalizeStarToken(JSONUtils.normalizeJavaScriptValue(raw)) {
+               let token = normalizeStarToken(fromPossiblyJSON: JSONUtils.normalizeJavaScriptValue(raw)) {
                 return token
             }
         }
 
-        let installInterceptor = """
-        (function() {
-            if (window.__starInstrumented) return;
-            window.__starInstrumented = true;
-            window.__starToken = '';
-            var origSet = XMLHttpRequest.prototype.setRequestHeader;
-            XMLHttpRequest.prototype.setRequestHeader = function(k, v) {
-                try {
-                    if (k && k.toLowerCase() === 'authorization' && v) window.__starToken = v;
-                } catch (e) {}
-                return origSet.apply(this, arguments);
-            };
-        })();
-        """
-        _ = try? await webView.evaluateJavaScript(installInterceptor)
-        log("XHR 拦截器已注入，当前 URL=\(webView.url?.absoluteString ?? "nil")")
+        _ = try? await webView.evaluateJavaScript(Self.starTokenInterceptorSource)
+        log("STAR token 拦截器已确认，当前 URL=\(webView.url?.absoluteString ?? "nil")")
 
         // 主动触发 SPA 请求
         let triggers = [
             "fetch('/api/app-api/activity/statistics/start-count', { headers: { platform: 'h5' } }).catch(function(){})",
+            "fetch('/api/app-api/user/profile/get', { headers: { platform: 'h5' } }).catch(function(){})",
             "if (typeof uni !== 'undefined' && uni.request) uni.request({ url: '/api/app-api/activity/statistics/start-count', method: 'GET', header: { platform: 'h5' } })"
         ]
         for script in triggers {
@@ -278,12 +301,99 @@ public final class StarAuthCoordinator: NSObject, ObservableObject {
         for _ in 0..<10 {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             if let raw = try? await webView.evaluateJavaScript("window.__starToken || ''"),
-               let token = normalizeStarToken(JSONUtils.normalizeJavaScriptValue(raw)) {
+               let token = normalizeStarToken(fromPossiblyJSON: JSONUtils.normalizeJavaScriptValue(raw)) {
+                return token
+            }
+            if let raw = try? await webView.evaluateJavaScript(Self.starTokenDumpScript),
+               let token = normalizeStarToken(fromPossiblyJSON: JSONUtils.normalizeJavaScriptValue(raw)) {
                 return token
             }
         }
         return nil
     }
+
+    private static func starTokenInterceptorScript() -> WKUserScript {
+        WKUserScript(
+            source: starTokenInterceptorSource,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false
+        )
+    }
+
+    private static let starTokenInterceptorSource = """
+    (function() {
+        if (window.__starInstrumented) return;
+        window.__starInstrumented = true;
+        window.__starToken = window.__starToken || '';
+        function remember(value) {
+            try {
+                if (!value) return;
+                var text = String(value);
+                if (/^Bearer\\s+/i.test(text)) text = text.replace(/^Bearer\\s+/i, '');
+                if (text.length >= 20 && text !== 'undefined' && text !== 'null') {
+                    window.__starToken = text;
+                }
+            } catch (e) {}
+        }
+        function inspectHeaders(headers) {
+            try {
+                if (!headers) return;
+                if (typeof Headers !== 'undefined' && headers instanceof Headers) {
+                    remember(headers.get('authorization') || headers.get('Authorization'));
+                    return;
+                }
+                if (Array.isArray(headers)) {
+                    headers.forEach(function(pair) {
+                        if (pair && String(pair[0]).toLowerCase() === 'authorization') remember(pair[1]);
+                    });
+                    return;
+                }
+                Object.keys(headers).forEach(function(key) {
+                    if (String(key).toLowerCase() === 'authorization') remember(headers[key]);
+                });
+            } catch (e) {}
+        }
+        try {
+            var origSet = XMLHttpRequest.prototype.setRequestHeader;
+            XMLHttpRequest.prototype.setRequestHeader = function(k, v) {
+                if (k && String(k).toLowerCase() === 'authorization') remember(v);
+                return origSet.apply(this, arguments);
+            };
+        } catch (e) {}
+        try {
+            var origFetch = window.fetch;
+            window.fetch = function(input, init) {
+                try {
+                    if (init && init.headers) inspectHeaders(init.headers);
+                    if (input && input.headers) inspectHeaders(input.headers);
+                } catch (e) {}
+                return origFetch.apply(this, arguments);
+            };
+        } catch (e) {}
+    })();
+    """
+
+    private static let starTokenDumpScript = """
+    (function() {
+        var found = [];
+        function add(v) {
+            try {
+                if (v === null || v === undefined) return;
+                found.push(String(v));
+            } catch (e) {}
+        }
+        add(window.__starToken || '');
+        [localStorage, sessionStorage].forEach(function(storage) {
+            try {
+                for (var i = 0; i < storage.length; i++) {
+                    var key = storage.key(i);
+                    add(storage.getItem(key));
+                }
+            } catch (e) {}
+        });
+        return found.join('\\n');
+    })()
+    """
 
     private func normalizeStarToken(_ value: String?) -> String? {
         guard var token = value?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty else {
@@ -300,6 +410,35 @@ public final class StarAuthCoordinator: NSObject, ObservableObject {
             return nil
         }
         return token
+    }
+
+    private func normalizeStarToken(fromPossiblyJSON value: String?) -> String? {
+        guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        if let token = normalizeStarToken(value) {
+            return token
+        }
+
+        let patterns = [
+            #""accessToken"\s*:\s*"([^"]+)""#,
+            #""access_token"\s*:\s*"([^"]+)""#,
+            #""token"\s*:\s*"([^"]+)""#,
+            #""Authorization"\s*:\s*"([^"]+)""#,
+            #""authorization"\s*:\s*"([^"]+)""#
+        ]
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let nsRange = NSRange(value.startIndex..<value.endIndex, in: value)
+            let matches = regex.matches(in: value, range: nsRange)
+            for match in matches where match.numberOfRanges > 1 {
+                guard let range = Range(match.range(at: 1), in: value) else { continue }
+                if let token = normalizeStarToken(String(value[range])) {
+                    return token
+                }
+            }
+        }
+        return nil
     }
 
     private func escapeForJSString(_ s: String) -> String {
