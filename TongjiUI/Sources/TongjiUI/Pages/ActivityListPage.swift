@@ -22,6 +22,9 @@ public struct ActivityListPage: View {
 
     public var body: some View {
         List {
+            if campusModel.isRefreshingAuth || campusModel.requiresInteractiveLogin {
+                AuthStateBanner()
+            }
             if !campusModel.loggedIn {
                 ContentUnavailableView(
                     "请先登录校园账户",

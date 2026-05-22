@@ -11,11 +11,23 @@
 | 日程 | 周课表查看（按周切换、点击节次看详情、导出到系统日历） | 一系统 `1.tongji.edu.cn` `findStudentTimetab` + `currentTermCalendar` | v0.1 可用 |
 | 校园 | 卓越星活动列表、筛选排序、个人星值摘要 | STAR 平台 `star.tongji.edu.cn` | v0.1 可用 |
 | 校园 | 教学管理信息系统通知公告（列表、详情、置顶服务卡片） | 一系统 `1.tongji.edu.cn` `commonMsgPublish` | v0.1 可用 |
-| 设置 | 校园账户登录、账户信息、退出登录 | 同济统一身份认证 + 一系统 session 用户信息 | v0.1 可用 |
+| 设置 | 校园账户登录、账户信息、退出登录、自动登录开关 | 同济统一身份认证 + 一系统 session 用户信息 | v0.1 可用 |
 
-登录方式：**仅同济统一身份认证（iam/ids.tongji.edu.cn）**。用户从 `设置 → 校园账户` 进入登录页，在 WebView 内完成一次 SSO 后，App 会用同一个 WebView 在遮罩下后台完成凭证抓取与 STAR 同步，不再把中间跳转页面暴露给用户。一系统使用 Cookie + sessionid + 加密 studentCode；STAR 使用 Bearer Token。后续访问课表、教务通知与卓越星都不再需要重复登录。
+登录方式：**仅同济统一身份认证（iam/ids.tongji.edu.cn）**。用户从 `设置 → 校园账户` 进入登录页，在 WebView 内完成一次 SSO 后，App 会在同一个 WebView 内于遮罩下后台抓取凭证（Cookie + sessionid + AES 加密 studentCode）。STAR 平台的活动列表为公开接口，无需额外登录；个人星值用独立的 Bearer Token，由 `StarAuthCoordinator` 单独维护。
 
-日程页的校历接口只用于缓存“本学期第几周对应哪一段日期”：`calendarId`、`beginDay`、`endDay`、`weekNum` 等。当前显示第几周由本机系统日期和缓存的 `beginDay` 即时计算，同一学期内不会每次进入日程页都请求校历接口。
+### 长效登录态体系
+
+为了避免"半夜被踢、早起重登"的体验，App 实现了三层兜底续期：
+
+1. **L1 静默续期**：业务 API 收到 401/403 时，由 `AuthRecoveryManager` 通过隐藏在根视图上的 0×0 `WKWebView` 重新访问 `1.tongji.edu.cn/workbench`。只要 IAM SSO cookie 仍有效，浏览器会自动跳回 workbench 并写入新的 `sessiondata`，全过程对用户无感。
+2. **L2 密码自动回填**（严格 opt-in）：用户在 `设置 → 自动登录` 中开启后，账号密码会以 `kSecAttrAccessControl(biometryCurrentSet)` 写入 Keychain，密钥锁进 Secure Enclave。L1 失败时，框架会触发一次 Face ID / Touch ID 校验，然后用 JS 注入填充 IAM 登录表单提交。若学校 SSO 当时要求图形验证码 / 短信码 / 二次验证，会自动检测并降级到 L3。
+3. **L3 交互登录**：上述全部失败 → `CampusModel.authState` 转 `requiresInteractiveLogin`，日程页 / 卓越星页顶部出现非阻塞 banner 引导手动登录。**本地课表 / 活动缓存不会被清空。**
+
+并发请求安全：`AuthRecoveryManager` 通过 single-flight `Task<Bool, Never>` 把多个 API 并发遇到 401 的情况合并成一次续期，不会出现"同一时间触发多次重登"。
+
+Cookie 处理：所有响应里的 `Set-Cookie` 会被合并回 `CookieJar.shared`（结构化存储，按 domain / path / expires 过滤、持久化到 Keychain `tongji_cookies_jar`），让服务端滚动刷新的 sessionId 立即生效。
+
+日程页的校历接口只用于缓存"本学期第几周对应哪一段日期"：`calendarId`、`beginDay`、`endDay`、`weekNum` 等。当前显示第几周由本机系统日期和缓存的 `beginDay` 即时计算，同一学期内不会每次进入日程页都请求校历接口。
 
 ## 暂未实现 / 不计划在 v0.1 实现
 
@@ -33,7 +45,7 @@ Jinitaimei/
 │   └── Assets.xcassets/
 ├── TongjiKit/                 # 业务 SDK（本地 SPM Package）
 │   └── Sources/TongjiKit/
-│       ├── Authentication/    # SSO 登录协调器 / Keychain CredentialStore / studentCode AES-CBC
+│       ├── Authentication/    # SSO 登录 / 静默续期 / 密码回填 / AuthRecoveryManager / CookieJar / Keychain / studentCode AES-CBC / StarAuthCoordinator
 │       ├── Course/            # 一系统课表 API + 解析 + SwiftData 仓储
 │       ├── Activity/          # STAR 活动 API + 解析 + SwiftData 仓储
 │       ├── TeachingNotice/    # 一系统通知公告 API + 模型
@@ -42,8 +54,9 @@ Jinitaimei/
 │       └── Util/              # JSON 等工具
 └── TongjiUI/                  # UI 层（本地 SPM Package，依赖 TongjiKit）
     └── Sources/TongjiUI/
-        ├── Navigation/        # RootView（TabBar） / CampusHome（校园服务列表）
-        ├── Pages/             # LoginPage / ActivityListPage / TeachingNoticePage / SettingsPage
+        ├── Navigation/        # RootView（TabBar + 隐藏续期 WebView + scenePhase 节流检查） / CampusHome
+        ├── Components/        # AuthStateBanner（renewing / requiresInteractiveLogin 非阻塞 banner）
+        ├── Pages/             # LoginPage / AutoLoginSettingsView / ActivityListPage / TeachingNoticePage / SettingsPage
         └── Calendar/          # CoursePage（周课表）
 ```
 
@@ -85,7 +98,7 @@ open Jinitaimei.xcodeproj
 1. 打开 `Jinitaimei.xcodeproj`。
 2. 顶部 scheme 选 **Jinitaimei**。
 3. 顶部 device 选择任意 iPhone 模拟器（例如 `iPhone 15` / `iPhone 15 Pro`，iOS 17.x）。
-4. `⌘R` 运行。首次启动不会自动弹出登录页；进入 `设置 → 校园账户` 后，用学号 + 统一身份密码登录即可。
+4. `⌘R` 运行。首次启动不会自动弹出登录页；进入 `设置 → 校园账户` 后，用学号 + 统一身份密码登录即可。登录完成后 App 会询问是否保存账号密码用于自动续期登录（Face ID / Touch ID 保护，默认拒绝；也可随时在 `设置 → 自动登录` 中关闭）。
 5. 模拟器内 WebView 调试：在 macOS Safari 菜单中开启 `开发 → 模拟器 → <你的 WebView>`，可像调试网页一样调试 SSO 流程。
 
 ### 用数据线在真机 iPhone 上调试
@@ -125,7 +138,12 @@ xcodebuild \
 - **App 界面只占屏幕中间，上下两条黑边** ——
   iOS 没识别到 LaunchScreen 配置，被强制按"iPhone 4 兼容模式"渲染。检查 [App/Info.plist](App/Info.plist) 里有 `UILaunchScreen` 键，然后在 Xcode 里 `Product → Clean Build Folder` (⇧⌘K) 一次再 ⌘R。
 - **登录页一闪而过自动关闭** ——
-  当前实现在每次进入 `LoginPage` 时主动清空 WKWebView 的 cookie/localStorage，强制重新走 SSO；如果你修改 [TongjiAuthCoordinator.swift](TongjiKit/Sources/TongjiKit/Authentication/TongjiAuthCoordinator.swift) `start()` 去掉清理逻辑，残留 cookie 会让 SSO 静默通过、登录页会瞬间关闭。
+  当前实现在每次进入 `LoginPage` 时调用 `TongjiAuthCoordinator.startFreshInteractiveLogin()` 主动清空 WKWebView 的 cookie/localStorage，强制重新走 SSO；如果你修改这条路径去掉清理逻辑，残留 cookie 会让 SSO 静默通过、登录页会瞬间关闭。（**注意**：静默续期路径 `attemptSilentRenew()` 故意**不**清数据，目的就是复用 IAM cookie，请勿混淆。）
+- **第二天打开 App 又被踢出登录** ——
+  正常情况下应当只看到顶部短暂出现"登录状态刷新中…"的 banner，几秒后自动消失。如果反复落到 `requiresInteractiveLogin`，看控制台 `[AuthRecovery]` / `[Auth]` 日志：
+  - L1 失败 + 用户未开自动登录 → 直接进 L3，属于预期。建议在 `设置 → 自动登录` 中开启 Face ID 保护的自动登录。
+  - L1 失败 + L2 也失败 → 多半学校 SSO 当时在弹验证码 / 短信码，搜索 `mfaRequired` 日志即可确认；只能手动登录一次。
+  - L1 一直超时 → 检查根视图是否正确挂载了 `AuthRecoveryManager.shared.silentCoordinator.webView`（0×0 隐藏视图）。WKWebView 不挂在视图树上时 SPA JS 会被系统暂停，导致抽取失败。
 - **修改 project.yml 后 Xcode 编译不到新文件** —— 重新跑 `xcodegen generate`。
 - **修改了 SPM Package（TongjiKit / TongjiUI）后 Xcode 看似没更新** ——
   `File → Packages → Reset Package Caches`，或直接关闭 Xcode 后 `rm -rf Jinitaimei.xcodeproj/project.xcworkspace/xcshareddata/swiftpm` 再 `xcodegen generate`。

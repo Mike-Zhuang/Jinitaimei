@@ -71,3 +71,6 @@ ExportOptions.plist
 .env
 .env.*
 !.env.example
+
+temp_plans
+

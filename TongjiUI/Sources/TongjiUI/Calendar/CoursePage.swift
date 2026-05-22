@@ -27,6 +27,9 @@ public struct CoursePage: View {
     public var body: some View {
         NavigationStack {
             List {
+                if campusModel.isRefreshingAuth || campusModel.requiresInteractiveLogin {
+                    AuthStateBanner()
+                }
                 if store.schedules.isEmpty && !store.isLoading {
                     emptyState
                 } else {

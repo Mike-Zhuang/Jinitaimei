@@ -21,6 +21,18 @@ public struct SettingsPage: View {
                 } header: {
                     Text("账户")
                 }
+
+                Section {
+                    NavigationLink {
+                        AutoLoginSettingsView()
+                    } label: {
+                        Label("自动登录", systemImage: "faceid")
+                    }
+                } header: {
+                    Text("登录保持")
+                } footer: {
+                    Text("登录态过期时，先尝试静默续期；失败后若你开启了自动登录，会用 Face ID / Touch ID 解锁后回填账号密码。")
+                }
             }
             .listStyle(.insetGrouped)
             .navigationTitle("设置")

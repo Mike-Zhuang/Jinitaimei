@@ -11,9 +11,19 @@ public final class SessionAPI {
         self.session = session
     }
 
-    /// 拉取并缓存当前登录用户资料。
+    /// 公开 API：自带 `withAuthRetry` 单次重试。
     public func refreshSessionUser() async throws -> TongjiUserProfile {
-        guard let cookie = store.get(CredentialStore.Keys.tongjiCookies), !cookie.isEmpty else {
+        try await withAuthRetry { [self] in
+            try await refreshSessionUserOnce()
+        }
+    }
+
+    /// 内部一次性版本：**不**触发续期，专供 `TongjiAuthCoordinator` /
+    /// `CampusModel.performScenePhaseCheckIfDue` 等需要避免递归的入口调用。
+    /// 401 / 403 时仅 `throw AuthError.expired`，**绝不清 Keychain**。
+    @discardableResult
+    public func refreshSessionUserOnce() async throws -> TongjiUserProfile {
+        guard let cookie = currentCookieHeader(), !cookie.isEmpty else {
             throw AuthError.notLoggedIn("未找到登录凭证，请先完成登录")
         }
         let sessionId = store.get(CredentialStore.Keys.tongjiSessionId) ?? ""
@@ -24,7 +34,7 @@ public final class SessionAPI {
         applyAuthHeaders(&request, cookie: cookie, sessionId: sessionId)
 
         let (data, response) = try await session.data(for: request)
-        try ensureAuth(response: response)
+        try ensureAuth(response: response, url: url)
 
         let payload = try JSONDecoder().decode(SessionUserResponse.self, from: data)
         guard payload.code == 200, let data = payload.data else {
@@ -47,6 +57,13 @@ public final class SessionAPI {
         )
         cache(profile)
         return profile
+    }
+
+    private func currentCookieHeader() -> String? {
+        let host = URL(string: apiHost)!
+        let fromJar = CookieJar.shared.loadHeader(for: host)
+        if !fromJar.isEmpty { return fromJar }
+        return store.get(CredentialStore.Keys.tongjiCookies)
     }
 
     private func cache(_ profile: TongjiUserProfile) {
@@ -80,12 +97,16 @@ public final class SessionAPI {
         request.timeoutInterval = 15
     }
 
-    private func ensureAuth(response: URLResponse) throws {
+    /// 401/403 只抛 `AuthError.expired`；**不再** `store.remove`，
+    /// 留给 `AuthRecoveryManager` 决定是否清理。
+    private func ensureAuth(response: URLResponse, url: URL) throws {
+        if let http = response as? HTTPURLResponse,
+           let fields = http.allHeaderFields as? [String: String] {
+            CookieJar.shared.mergeSetCookieFields(fields, for: url)
+        }
         guard let http = response as? HTTPURLResponse else { return }
         if http.statusCode == 401 || http.statusCode == 403 {
-            store.remove(CredentialStore.Keys.tongjiCookies)
-            store.remove(CredentialStore.Keys.tongjiSessionId)
-            throw AuthError.expired("凭证已失效，请重新登录")
+            throw AuthError.expired("凭证已失效")
         }
         if !(200..<300).contains(http.statusCode) {
             throw AuthError.loginFlowFailed("HTTP \(http.statusCode)")

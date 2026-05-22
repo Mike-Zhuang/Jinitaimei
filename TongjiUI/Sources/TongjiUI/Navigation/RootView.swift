@@ -1,37 +1,52 @@
 import SwiftUI
 import SwiftData
+import WebKit
 import TongjiKit
 
 /// App 根视图：日程、校园与设置三个 Tab。
 ///
-/// 实测发现卓越星 H5 端的活动浏览接口（`/api/app-api/activity/index/list` 等）
-/// 是 **公开接口**，无需 Bearer Token；因此不再做后台 token 抓取。
-/// 这也避免了之前 30 秒徒劳等待造成的"卡顿"感。
+/// 同时把 `AuthRecoveryManager.shared.silentCoordinator.webView` 作为
+/// 0×0 隐藏视图挂在 RootView 上：这样静默续期 / 密码回填 WKWebView 才能
+/// 稳定执行 SPA JS（off-screen webview 容易被系统暂停）。
 public struct RootView: View {
 
     @StateObject private var campusModel = CampusModel.shared
+    @Environment(\.scenePhase) private var scenePhase
 
     public init() {}
 
     public var body: some View {
-        TabView {
-            CoursePageContainer()
-                .tabItem {
-                    Label("日程", systemImage: "calendar")
-                }
+        ZStack {
+            TabView {
+                CoursePageContainer()
+                    .tabItem {
+                        Label("日程", systemImage: "calendar")
+                    }
 
-            CampusHome()
-                .tabItem {
-                    Label("校园", systemImage: "building.columns")
-                }
+                CampusHome()
+                    .tabItem {
+                        Label("校园", systemImage: "building.columns")
+                    }
 
-            SettingsPage()
-                .tabItem {
-                    Label("设置", systemImage: "gearshape")
-                }
+                SettingsPage()
+                    .tabItem {
+                        Label("设置", systemImage: "gearshape")
+                    }
+            }
+
+            // 0×0 隐藏 WebView：让静默续期能稳定执行 SPA JS。
+            HiddenWebViewHost(webView: AuthRecoveryManager.shared.silentCoordinator.webView)
+                .frame(width: 0, height: 0)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
         }
         .task {
             campusModel.refresh()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                campusModel.performScenePhaseCheckIfDue()
+            }
         }
     }
 }
@@ -41,4 +56,11 @@ private struct CoursePageContainer: View {
     var body: some View {
         CoursePage(modelContext: modelContext)
     }
+}
+
+/// 把 `WKWebView` 嵌进视图树但不占面积，专供续期协调器使用。
+private struct HiddenWebViewHost: UIViewRepresentable {
+    let webView: WKWebView
+    func makeUIView(context: Context) -> WKWebView { webView }
+    func updateUIView(_ uiView: WKWebView, context: Context) {}
 }

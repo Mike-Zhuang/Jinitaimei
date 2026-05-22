@@ -2,11 +2,12 @@ import Foundation
 
 /// 卓越星 STAR 平台 API 客户端。
 ///
-/// 实测发现：H5 端 `/api/app-api/activity/index/list` 是 **公开接口**，无需鉴权。
-/// SPA 在 `star.tongji.edu.cn/app/` 上调用时不带 Authorization 头也能正常返回数据。
-/// 因此这里有 Bearer Token 就带上（兼容未来可能的接口收紧），没有则匿名调用。
+/// - `fetchAllActivitiesRaw`：公开接口（H5 端），无需 Bearer Token；
+///   有就带上提高兼容性。
+/// - `fetchStarScoreSummary`：必须 Bearer Token。
 ///
-/// 分页协议：每页 10 条，直到本页 < 10 条停止。
+/// 公方法走 `withStarAuthRetry`，401 时让 `StarAuthCoordinator` 跑续期再重试一次；
+/// **不**触发一系统的 `CampusModel.authState` 任何变化。
 public final class ActivityAPI {
 
     private let apiBase = URL(string: "https://star.tongji.edu.cn")!
@@ -19,8 +20,21 @@ public final class ActivityAPI {
         self.session = session
     }
 
-    /// 拉取全部活动的原始 JSON 项目数组（每个元素是一条活动的 JSON 字符串）。
     public func fetchAllActivitiesRaw() async throws -> [String] {
+        try await withStarAuthRetry { [self] in
+            try await fetchAllActivitiesRawOnce()
+        }
+    }
+
+    public func fetchStarScoreSummary() async throws -> StarScoreSummary {
+        try await withStarAuthRetry { [self] in
+            try await fetchStarScoreSummaryOnce()
+        }
+    }
+
+    // MARK: - Once 版本
+
+    public func fetchAllActivitiesRawOnce() async throws -> [String] {
         let token = validTokenOrNil()
 
         var all: [String] = []
@@ -40,12 +54,9 @@ public final class ActivityAPI {
                 break
             }
 
-            // 业务码检查
             if let code = (dict["code"] as? Int) ?? (dict["code"] as? NSNumber)?.intValue {
                 if code == 401 || code == 403 {
-                    store.remove(CredentialStore.Keys.starBearerToken)
-                    store.remove(CredentialStore.Keys.starScoreSummary)
-                    throw AuthError.expired("STAR 平台凭证已失效，请重新登录")
+                    throw AuthError.expired("STAR 平台凭证已失效")
                 }
                 if code != 0 { break }
             }
@@ -55,7 +66,6 @@ public final class ActivityAPI {
                 break
             }
 
-            // 每条转回 JSON 字符串，便于上层用 JSONUtils 解析
             let chunk: [String] = list.compactMap { item in
                 if let d = try? JSONSerialization.data(withJSONObject: item),
                    let s = String(data: d, encoding: .utf8) {
@@ -71,10 +81,9 @@ public final class ActivityAPI {
         return all
     }
 
-    /// 拉取并缓存当前用户的卓越星个人星值。
-    public func fetchStarScoreSummary() async throws -> StarScoreSummary {
+    public func fetchStarScoreSummaryOnce() async throws -> StarScoreSummary {
         guard let token = validTokenOrNil() else {
-            throw AuthError.notLoggedIn("未找到 STAR 平台登录凭证，请先完成登录")
+            throw AuthError.expired("未找到 STAR 平台登录凭证")
         }
 
         let url = URL(string: "\(apiBase.absoluteString)/api/app-api/activity/statistics/start-count")!
@@ -86,6 +95,9 @@ public final class ActivityAPI {
         try ensureAuth(response: response)
 
         let payload = try JSONDecoder().decode(StarScoreResponse.self, from: data)
+        if payload.code == 401 || payload.code == 403 {
+            throw AuthError.expired("STAR 平台凭证已失效")
+        }
         guard payload.code == 0, let data = payload.data else {
             throw AuthError.loginFlowFailed(payload.msg?.isEmpty == false ? payload.msg! : "卓越星个人星值响应异常")
         }
@@ -127,18 +139,16 @@ public final class ActivityAPI {
             .trimmingCharacters(in: .whitespacesAndNewlines),
               token.count >= 20,
               token.lowercased() != "bearer" else {
-            store.remove(CredentialStore.Keys.starBearerToken)
             return nil
         }
         return token
     }
 
+    /// 401/403 仅抛 `AuthError.expired`；交给 `StarAuthCoordinator` 续期。
     private func ensureAuth(response: URLResponse) throws {
         guard let http = response as? HTTPURLResponse else { return }
         if http.statusCode == 401 || http.statusCode == 403 {
-            store.remove(CredentialStore.Keys.starBearerToken)
-            store.remove(CredentialStore.Keys.starScoreSummary)
-            throw AuthError.expired("STAR 平台凭证已失效，请重新登录")
+            throw AuthError.expired("STAR 平台凭证已失效")
         }
         if !(200..<300).contains(http.statusCode) {
             throw AuthError.loginFlowFailed("HTTP \(http.statusCode)")

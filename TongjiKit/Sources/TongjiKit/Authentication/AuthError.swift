@@ -8,11 +8,20 @@ public enum AuthError: LocalizedError, Equatable {
     case expired(String)
     /// 登录流程中 WebView 出错或被用户取消。
     case loginFlowFailed(String)
+    /// 自动密码回填遇到验证码 / 多因素验证，必须降级到交互登录。
+    case mfaRequired(String)
 
     public var errorDescription: String? {
         switch self {
-        case .notLoggedIn(let msg), .expired(let msg), .loginFlowFailed(let msg):
+        case .notLoggedIn(let msg), .expired(let msg),
+             .loginFlowFailed(let msg), .mfaRequired(let msg):
             return msg
         }
+    }
+
+    /// 用于 retry wrapper 判定：是否属于"可以尝试静默续期"的过期错误。
+    public var isExpired: Bool {
+        if case .expired = self { return true }
+        return false
     }
 }
