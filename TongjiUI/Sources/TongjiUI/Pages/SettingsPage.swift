@@ -44,7 +44,7 @@ public struct SettingsPage: View {
                 } header: {
                     Text("提醒")
                 } footer: {
-                    Text("当前支持本地通知；邮件通知和远程推送会在后端服务准备好后接入。")
+                    Text("支持本地通知和邮件推送；邮件推送由后端低频轮询服务处理。")
                 }
             }
             .listStyle(.insetGrouped)
@@ -66,6 +66,9 @@ private struct NotificationSettingsView: View {
     @StateObject private var preferenceStore = NotificationPreferenceStore.shared
     @StateObject private var notificationManager = LocalNotificationManager.shared
     @State private var emailRecipient = ""
+    @State private var isSyncingMailPush = false
+    @State private var mailPushStatus: String?
+    @State private var showCredentialSheet = false
 
     private let modules = [
         ("hongwen", "弘文之星"),
@@ -158,12 +161,59 @@ private struct NotificationSettingsView: View {
             } footer: {
                 Text("邮件通知需要后端轮询服务部署后才会生效；发送邮箱密码只保存在服务器环境变量，不写入 App 或仓库。")
             }
+
+            Section {
+                Toggle("启用邮件推送", isOn: Binding(
+                    get: { preferenceStore.preferences.mailPushEnabled },
+                    set: setMailPushEnabled
+                ))
+
+                Button {
+                    Task { await syncMailPushPreferences() }
+                } label: {
+                    if isSyncingMailPush {
+                        ProgressView()
+                    } else {
+                        Text("同步邮件推送设置")
+                    }
+                }
+                .disabled(isSyncingMailPush || !canSyncMailPush)
+
+                Button("保存离线推送凭据") {
+                    showCredentialSheet = true
+                }
+                .disabled(!canSyncMailPush)
+
+                if preferenceStore.preferences.mailPushEnabled {
+                    Button("关闭并删除服务器订阅", role: .destructive) {
+                        Task { await deleteMailPushSubscription() }
+                    }
+                    .disabled(isSyncingMailPush || emailRecipient.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+
+                if let mailPushStatus {
+                    Text(mailPushStatus)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("邮件推送")
+            } footer: {
+                Text("离线邮件推送会把你输入的同济统一身份账号密码发送到后端加密保存，用于低频轮询教务通知和卓越星提醒。关闭后会请求服务器删除订阅与凭据。")
+            }
         }
         .navigationTitle("通知")
         .navigationBarTitleDisplayMode(.inline)
         .task {
             emailRecipient = preferenceStore.preferences.emailRecipient
             await notificationManager.refreshAuthorizationStatus()
+        }
+        .sheet(isPresented: $showCredentialSheet) {
+            MailPushCredentialSheet(
+                email: emailRecipient.trimmingCharacters(in: .whitespacesAndNewlines)
+            ) { username, password in
+                await saveMailPushCredentials(username: username, password: password)
+            }
         }
     }
 
@@ -189,6 +239,17 @@ private struct NotificationSettingsView: View {
         }
     }
 
+    private var canSyncMailPush: Bool {
+        emailRecipient.trimmingCharacters(in: .whitespacesAndNewlines).contains("@")
+    }
+
+    private func setMailPushEnabled(_ value: Bool) {
+        preferenceStore.update { $0.mailPushEnabled = value }
+        if value {
+            Task { await syncMailPushPreferences() }
+        }
+    }
+
     private func toggleModule(_ code: String) {
         preferenceStore.update { preferences in
             if preferences.selectedStarModuleCodes.contains(code) {
@@ -201,6 +262,120 @@ private struct NotificationSettingsView: View {
 
     private func saveEmailRecipient() {
         preferenceStore.update { $0.emailRecipient = emailRecipient.trimmingCharacters(in: .whitespacesAndNewlines) }
+    }
+
+    private func syncMailPushPreferences() async {
+        guard !isSyncingMailPush else { return }
+        saveEmailRecipient()
+        guard canSyncMailPush else {
+            mailPushStatus = "请先填写有效的接收邮箱"
+            return
+        }
+
+        isSyncingMailPush = true
+        defer { isSyncingMailPush = false }
+        do {
+            try await PushSubscriptionAPI().saveSubscription(preferenceStore.preferences)
+            mailPushStatus = "邮件推送设置已同步"
+        } catch {
+            mailPushStatus = error.localizedDescription
+        }
+    }
+
+    private func saveMailPushCredentials(username: String, password: String) async {
+        guard canSyncMailPush else {
+            mailPushStatus = "请先填写有效的接收邮箱"
+            return
+        }
+
+        isSyncingMailPush = true
+        defer { isSyncingMailPush = false }
+        preferenceStore.update { $0.mailPushEnabled = true }
+        saveEmailRecipient()
+        do {
+            let api = PushSubscriptionAPI()
+            try await api.saveSubscription(preferenceStore.preferences)
+            try await api.saveCredentials(
+                email: preferenceStore.preferences.emailRecipient,
+                username: username,
+                password: password
+            )
+            mailPushStatus = "离线邮件推送凭据已加密保存到服务器"
+        } catch {
+            mailPushStatus = error.localizedDescription
+        }
+    }
+
+    private func deleteMailPushSubscription() async {
+        guard !isSyncingMailPush else { return }
+        let email = emailRecipient.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !email.isEmpty else { return }
+
+        isSyncingMailPush = true
+        defer { isSyncingMailPush = false }
+        do {
+            try await PushSubscriptionAPI().deleteSubscription(email: email)
+            preferenceStore.update { $0.mailPushEnabled = false }
+            mailPushStatus = "服务器订阅与凭据已删除"
+        } catch {
+            mailPushStatus = error.localizedDescription
+        }
+    }
+}
+
+private struct MailPushCredentialSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let email: String
+    let onSave: (String, String) async -> Void
+
+    @State private var username = ""
+    @State private var password = ""
+    @State private var isSaving = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text(email)
+                        .foregroundStyle(.secondary)
+                    TextField("统一身份认证账号", text: $username)
+                        .textContentType(.username)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    SecureField("统一身份认证密码", text: $password)
+                        .textContentType(.password)
+                } header: {
+                    Text("后端离线轮询凭据")
+                } footer: {
+                    Text("保存后，后端会加密保存这组凭据，仅用于邮件提醒的低频轮询。遇到验证码或二次验证时会停止自动处理并邮件提醒你重新确认。")
+                }
+
+                Section {
+                    Button {
+                        Task {
+                            isSaving = true
+                            await onSave(username, password)
+                            isSaving = false
+                            dismiss()
+                        }
+                    } label: {
+                        if isSaving {
+                            ProgressView()
+                        } else {
+                            Text("同意并保存到服务器")
+                        }
+                    }
+                    .disabled(username.isEmpty || password.isEmpty || isSaving)
+                }
+            }
+            .navigationTitle("邮件推送凭据")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                Button("取消") {
+                    dismiss()
+                }
+            }
+        }
     }
 }
 

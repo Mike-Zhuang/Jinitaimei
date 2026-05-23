@@ -2,6 +2,7 @@ import Foundation
 
 public struct NotificationPreferences: Codable, Equatable, Sendable {
     public var localNotificationsEnabled: Bool
+    public var mailPushEnabled: Bool
     public var teachingNoticeEnabled: Bool
     public var starNewActivityEnabled: Bool
     public var starRegistrationEnabled: Bool
@@ -10,6 +11,7 @@ public struct NotificationPreferences: Codable, Equatable, Sendable {
 
     public init(
         localNotificationsEnabled: Bool = false,
+        mailPushEnabled: Bool = false,
         teachingNoticeEnabled: Bool = true,
         starNewActivityEnabled: Bool = true,
         starRegistrationEnabled: Bool = true,
@@ -17,6 +19,7 @@ public struct NotificationPreferences: Codable, Equatable, Sendable {
         emailRecipient: String = ""
     ) {
         self.localNotificationsEnabled = localNotificationsEnabled
+        self.mailPushEnabled = mailPushEnabled
         self.teachingNoticeEnabled = teachingNoticeEnabled
         self.starNewActivityEnabled = starNewActivityEnabled
         self.starRegistrationEnabled = starRegistrationEnabled
@@ -31,6 +34,42 @@ public struct NotificationPreferences: Codable, Equatable, Sendable {
         "qiusuo",
         "lixing"
     ]
+
+    private enum CodingKeys: String, CodingKey {
+        case localNotificationsEnabled
+        case mailPushEnabled
+        case teachingNoticeEnabled
+        case starNewActivityEnabled
+        case starRegistrationEnabled
+        case selectedStarModuleCodes
+        case emailRecipient
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.localNotificationsEnabled = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .localNotificationsEnabled
+        ) ?? false
+        self.mailPushEnabled = try container.decodeIfPresent(Bool.self, forKey: .mailPushEnabled) ?? false
+        self.teachingNoticeEnabled = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .teachingNoticeEnabled
+        ) ?? true
+        self.starNewActivityEnabled = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .starNewActivityEnabled
+        ) ?? true
+        self.starRegistrationEnabled = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .starRegistrationEnabled
+        ) ?? true
+        self.selectedStarModuleCodes = try container.decodeIfPresent(
+            Set<String>.self,
+            forKey: .selectedStarModuleCodes
+        ) ?? Self.defaultStarModuleCodes
+        self.emailRecipient = try container.decodeIfPresent(String.self, forKey: .emailRecipient) ?? ""
+    }
 }
 
 @MainActor

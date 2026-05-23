@@ -15,6 +15,8 @@
 
 登录方式：**仅同济统一身份认证（iam/ids.tongji.edu.cn）**。用户从 `设置 → 校园账户` 进入登录页，在 WebView 内完成一次 SSO 后，App 会在同一个 WebView 内于遮罩下后台抓取凭证（Cookie + sessionid + AES 加密 studentCode）。STAR 平台的活动列表为公开接口，无需额外登录；个人星值用独立的 Bearer Token，由 `StarAuthCoordinator` 单独维护。
 
+邮件推送：`设置 → 通知` 中可填写接收邮箱并同步到 `https://tjpush.mikezhuang.cn`。如果用户开启“离线邮件推送”并保存同济统一身份账号密码，服务端会加密保存这组凭据，用于低频轮询教务通知；卓越星新活动和报名提醒优先使用公开活动接口，不上传 STAR Token。关闭邮件推送会请求服务器删除订阅和凭据。SMTP 密码、服务端加密主密钥不写入 App 或仓库。
+
 ### 长效登录态体系
 
 为了避免"半夜被踢、早起重登"的体验，App 实现了三层兜底续期：
