@@ -65,6 +65,7 @@ public struct SettingsPage: View {
 private struct NotificationSettingsView: View {
     @StateObject private var preferenceStore = NotificationPreferenceStore.shared
     @StateObject private var notificationManager = LocalNotificationManager.shared
+    @StateObject private var followStore = StarActivityFollowStore.shared
     @State private var emailRecipient = ""
     @State private var isSyncingMailPush = false
     @State private var mailPushStatus: String?
@@ -127,7 +128,7 @@ private struct NotificationSettingsView: View {
             } header: {
                 Text("卓越星")
             } footer: {
-                Text("活动列表中点铃铛可以关注活动；关注后若它进入报名进行中，会发送提醒。")
+                Text("新活动提醒只针对所选星星种类中“新出现且尚未开始报名”的活动；活动列表中点铃铛可以关注某个活动，关注后若它从非报名状态切换到报名进行中，会发送提醒。")
             }
 
             Section("星星种类") {
@@ -275,7 +276,10 @@ private struct NotificationSettingsView: View {
         isSyncingMailPush = true
         defer { isSyncingMailPush = false }
         do {
-            try await PushSubscriptionAPI().saveSubscription(preferenceStore.preferences)
+            try await PushSubscriptionAPI().saveSubscription(
+                preferenceStore.preferences,
+                followedActivityIds: followStore.followedActivityIds
+            )
             mailPushStatus = "邮件推送设置已同步"
         } catch {
             mailPushStatus = error.localizedDescription
@@ -294,7 +298,10 @@ private struct NotificationSettingsView: View {
         saveEmailRecipient()
         do {
             let api = PushSubscriptionAPI()
-            try await api.saveSubscription(preferenceStore.preferences)
+            try await api.saveSubscription(
+                preferenceStore.preferences,
+                followedActivityIds: followStore.followedActivityIds
+            )
             try await api.saveCredentials(
                 email: preferenceStore.preferences.emailRecipient,
                 username: username,

@@ -11,6 +11,7 @@ public struct ActivityListPage: View {
 
     @ObservedObject private var campusModel = CampusModel.shared
     @ObservedObject private var followStore = StarActivityFollowStore.shared
+    @ObservedObject private var preferenceStore = NotificationPreferenceStore.shared
     @StateObject private var store: ActivityStore
     @State private var presentedURL: IdentifiedURL?
     @State private var showError = false
@@ -65,6 +66,7 @@ public struct ActivityListPage: View {
 
                             Button {
                                 followStore.toggle(activity.remoteId)
+                                syncMailPushFollowStateIfNeeded()
                             } label: {
                                 Image(systemName: followStore.isFollowed(activity.remoteId) ? "bell.fill" : "bell")
                                     .font(.body)
@@ -163,6 +165,22 @@ public struct ActivityListPage: View {
         }
         .sheet(isPresented: $showFilterSheet) {
             ActivityFilterSheet(filterState: $filterState)
+        }
+    }
+
+    private func syncMailPushFollowStateIfNeeded() {
+        let email = preferenceStore.preferences.emailRecipient
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard preferenceStore.preferences.mailPushEnabled, !email.isEmpty else { return }
+        Task {
+            do {
+                try await PushSubscriptionAPI().saveSubscription(
+                    preferenceStore.preferences,
+                    followedActivityIds: followStore.followedActivityIds
+                )
+            } catch {
+                print("[Notification] 同步关注活动到邮件推送后端失败: \(error)")
+            }
         }
     }
 

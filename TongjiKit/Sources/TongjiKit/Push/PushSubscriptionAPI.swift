@@ -12,11 +12,19 @@ public final class PushSubscriptionAPI: Sendable {
         self.session = session
     }
 
-    public func saveSubscription(_ preferences: NotificationPreferences) async throws {
+    public func saveSubscription(
+        _ preferences: NotificationPreferences,
+        followedActivityIds: Set<Int64>
+    ) async throws {
         var request = URLRequest(url: baseURL.appending(path: "/api/v1/subscriptions"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(SubscriptionPayload(preferences: preferences))
+        request.httpBody = try JSONEncoder().encode(
+            SubscriptionPayload(
+                preferences: preferences,
+                followedActivityIds: followedActivityIds
+            )
+        )
         _ = try await send(request)
     }
 
@@ -68,14 +76,19 @@ private struct SubscriptionPayload: Encodable {
     let starNewActivityEnabled: Bool
     let starRegistrationEnabled: Bool
     let selectedStarModuleCodes: [String]
+    let followedStarActivityIds: [Int64]
 
-    init(preferences: NotificationPreferences) {
+    init(
+        preferences: NotificationPreferences,
+        followedActivityIds: Set<Int64>
+    ) {
         self.email = preferences.emailRecipient
         self.mailPushEnabled = preferences.mailPushEnabled
         self.teachingNoticeEnabled = preferences.teachingNoticeEnabled
         self.starNewActivityEnabled = preferences.starNewActivityEnabled
         self.starRegistrationEnabled = preferences.starRegistrationEnabled
         self.selectedStarModuleCodes = Array(preferences.selectedStarModuleCodes).sorted()
+        self.followedStarActivityIds = Array(followedActivityIds).sorted()
     }
 
     enum CodingKeys: String, CodingKey {
@@ -85,6 +98,7 @@ private struct SubscriptionPayload: Encodable {
         case starNewActivityEnabled = "star_new_activity_enabled"
         case starRegistrationEnabled = "star_registration_enabled"
         case selectedStarModuleCodes = "selected_star_module_codes"
+        case followedStarActivityIds = "followed_star_activity_ids"
     }
 }
 
