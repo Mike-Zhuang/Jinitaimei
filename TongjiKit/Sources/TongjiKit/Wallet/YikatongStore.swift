@@ -1,14 +1,17 @@
 import Foundation
+import os.log
 import SwiftData
 
 @MainActor
 public final class YikatongStore: ObservableObject {
     @Published public private(set) var snapshots: [CampusCardBalanceSnapshot] = []
+    @Published public private(set) var transactions: [CampusCardTransaction] = []
     @Published public private(set) var isLoading = false
     @Published public private(set) var lastError: String?
 
     private let api: YikatongAPI
     private let context: ModelContext
+    private let logger = Logger(subsystem: "com.jinitaimei.app", category: "YikatongStore")
 
     public init(modelContext: ModelContext, api: YikatongAPI = YikatongAPI()) {
         self.context = modelContext
@@ -24,11 +27,17 @@ public final class YikatongStore: ObservableObject {
         let descriptor = FetchDescriptor<CampusCardBalanceSnapshot>(
             sortBy: [SortDescriptor(\.capturedAt, order: .reverse)]
         )
+        let transactionDescriptor = FetchDescriptor<CampusCardTransaction>(
+            sortBy: [SortDescriptor(\.transactionDateTime, order: .reverse)]
+        )
         do {
             snapshots = try context.fetch(descriptor)
+            transactions = try context.fetch(transactionDescriptor)
         } catch {
             snapshots = []
+            transactions = []
             lastError = error.localizedDescription
+            log("本地校园卡数据加载失败：\(error.localizedDescription)")
         }
     }
 
@@ -39,16 +48,29 @@ public final class YikatongStore: ObservableObject {
         lastError = nil
 
         do {
+            log("开始同步校园卡余额与消费记录")
             let payload = try await api.fetchBalance()
             try persist(payload)
+            log("校园卡余额同步成功：¥\(CampusCardFormat.balance(payload.balanceYuan))")
+
+            do {
+                let transactionPayloads = try await api.fetchTransactions()
+                try persistTransactions(transactionPayloads)
+                log("校园卡消费记录同步成功：\(transactionPayloads.count) 条")
+            } catch {
+                log("校园卡消费记录同步失败（不影响余额展示）：\(error.localizedDescription)")
+            }
+
             loadFromLocal()
             if let latestSnapshot {
                 await CampusNotificationDetector.shared.processCampusCardBalance(latestSnapshot)
             }
         } catch let error as AuthError {
             lastError = error.errorDescription
+            log("校园卡同步失败（鉴权）: \(error.errorDescription ?? error.localizedDescription)")
         } catch {
             lastError = error.localizedDescription
+            log("校园卡同步失败：\(error.localizedDescription)")
         }
     }
 
@@ -89,6 +111,43 @@ public final class YikatongStore: ObservableObject {
         try context.save()
     }
 
+    private func persistTransactions(_ payloads: [CampusCardTransactionPayload]) throws {
+        guard !payloads.isEmpty else { return }
+        let descriptor = FetchDescriptor<CampusCardTransaction>()
+        let existing = try context.fetch(descriptor)
+        var existingMap = Dictionary(uniqueKeysWithValues: existing.map { ($0.orderId, $0) })
+
+        for payload in payloads {
+            if let transaction = existingMap[payload.orderId] {
+                transaction.transactionDateTime = payload.transactionDateTime
+                transaction.amountYuan = payload.amountYuan
+                transaction.balanceYuan = payload.balanceYuan
+                transaction.transactionDescription = payload.transactionDescription
+                transaction.turnoverType = payload.turnoverType
+                transaction.locationName = payload.locationName
+                transaction.payName = payload.payName
+                transaction.updatedAt = payload.updatedAt
+            } else {
+                let transaction = CampusCardTransaction(
+                    orderId: payload.orderId,
+                    transactionDateTime: payload.transactionDateTime,
+                    amountYuan: payload.amountYuan,
+                    balanceYuan: payload.balanceYuan,
+                    transactionDescription: payload.transactionDescription,
+                    turnoverType: payload.turnoverType,
+                    locationName: payload.locationName,
+                    payName: payload.payName,
+                    updatedAt: payload.updatedAt
+                )
+                context.insert(transaction)
+                existingMap[payload.orderId] = transaction
+            }
+        }
+
+        try pruneTransactions(maxCount: 600)
+        try context.save()
+    }
+
     private func pruneHistory(maxCount: Int) throws {
         let descriptor = FetchDescriptor<CampusCardBalanceSnapshot>(
             sortBy: [SortDescriptor(\.capturedAt, order: .reverse)]
@@ -100,11 +159,33 @@ public final class YikatongStore: ObservableObject {
         }
     }
 
+    private func pruneTransactions(maxCount: Int) throws {
+        let descriptor = FetchDescriptor<CampusCardTransaction>(
+            sortBy: [SortDescriptor(\.transactionDateTime, order: .reverse)]
+        )
+        let all = try context.fetch(descriptor)
+        guard all.count > maxCount else { return }
+        for transaction in all.suffix(from: maxCount) {
+            context.delete(transaction)
+        }
+    }
+
     private func clearAll() throws {
         let descriptor = FetchDescriptor<CampusCardBalanceSnapshot>()
         let all = try context.fetch(descriptor)
         for snapshot in all {
             context.delete(snapshot)
         }
+
+        let transactionDescriptor = FetchDescriptor<CampusCardTransaction>()
+        let allTransactions = try context.fetch(transactionDescriptor)
+        for transaction in allTransactions {
+            context.delete(transaction)
+        }
+    }
+
+    private func log(_ message: String) {
+        logger.debug("\(message, privacy: .public)")
+        print("[YikatongStore] \(message)")
     }
 }

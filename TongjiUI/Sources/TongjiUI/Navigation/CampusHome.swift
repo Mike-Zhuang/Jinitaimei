@@ -458,8 +458,8 @@ private struct CampusCardPinnedCard: View {
 
                     Spacer(minLength: 8)
 
-                    if #available(iOS 17.0, *), store.snapshots.count > 1 {
-                        CampusCardPinnedMiniChart(points: store.snapshots)
+                    if #available(iOS 17.0, *), !dailySpendingPoints(from: store.transactions).isEmpty {
+                        CampusCardPinnedMiniChart(points: dailySpendingPoints(from: store.transactions))
                             .frame(width: 100, height: 40)
                     }
                 }
@@ -510,6 +510,23 @@ private struct CampusCardPinnedCard: View {
             storeHolder.store = YikatongStore(modelContext: modelContext)
         }
     }
+
+    private func dailySpendingPoints(from transactions: [CampusCardTransaction]) -> [CampusCardMiniChartPoint] {
+        let calendar = Calendar.current
+        let grouped = Dictionary(grouping: transactions.filter { $0.signedAmountYuan < 0 }) { transaction in
+            calendar.startOfDay(for: transaction.transactionDateTime)
+        }
+        return grouped
+            .map { date, records in
+                CampusCardMiniChartPoint(
+                    date: date,
+                    amount: records.reduce(0) { $0 + abs($1.signedAmountYuan) }
+                )
+            }
+            .sorted { $0.date < $1.date }
+            .suffix(7)
+            .map { $0 }
+    }
 }
 
 private struct PinnedServiceCardLayout<Content: View>: View {
@@ -539,27 +556,21 @@ private struct PinnedServiceCardLayout<Content: View>: View {
 
 @available(iOS 17.0, *)
 private struct CampusCardPinnedMiniChart: View {
-    let points: [CampusCardBalanceSnapshot]
-
-    private var chartPoints: [CampusCardMiniChartPoint] {
-        Array(points.prefix(10).reversed().map {
-            CampusCardMiniChartPoint(date: $0.capturedAt, balance: $0.balanceYuan)
-        })
-    }
+    let points: [CampusCardMiniChartPoint]
 
     var body: some View {
-        Chart(chartPoints) { point in
+        Chart(points) { point in
             LineMark(
                 x: .value("时间", point.date),
-                y: .value("余额", point.balance)
+                y: .value("消费", point.amount)
             )
-            .foregroundStyle(.blue)
+            .foregroundStyle(.orange)
 
             AreaMark(
                 x: .value("时间", point.date),
-                y: .value("余额", point.balance)
+                y: .value("消费", point.amount)
             )
-            .foregroundStyle(.blue.opacity(0.12))
+            .foregroundStyle(.orange.opacity(0.14))
         }
         .chartXAxis(.hidden)
         .chartYAxis(.hidden)
@@ -569,7 +580,7 @@ private struct CampusCardPinnedMiniChart: View {
 private struct CampusCardMiniChartPoint: Identifiable {
     let id = UUID()
     let date: Date
-    let balance: Double
+    let amount: Double
 }
 
 /// 仅用于在 NavigationLink 中拿到 modelContext。

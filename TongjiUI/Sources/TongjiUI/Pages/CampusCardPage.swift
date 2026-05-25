@@ -24,15 +24,15 @@ public struct CampusCardPage: View {
                 }
             } else if let latest = store.latestSnapshot {
                 balanceSection(latest)
-                if !chartData.isEmpty {
+                if !dailySpendingChartData.isEmpty {
                     chartSection
                 }
-                historySection
+                transactionSection
             } else if store.isLoading {
                 Section {
                     HStack(spacing: 12) {
                         ProgressView()
-                        Text("正在同步校园卡余额")
+                        Text("正在同步校园卡余额与消费记录")
                             .foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -92,81 +92,112 @@ public struct CampusCardPage: View {
             LabeledContent("更新时间", value: snapshot.capturedAt.formatted(date: .numeric, time: .shortened))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-        } footer: {
-            Text("当前版本先使用本地多次查询形成的余额快照展示趋势，后续再补消费流水。")
         }
     }
 
     @ViewBuilder
     private var chartSection: some View {
         if #available(iOS 17.0, *) {
-            Section("余额变化") {
-                CampusCardBalanceChart(data: chartData)
+            Section("每日消费") {
+                CampusCardDailySpendingChart(data: dailySpendingChartData)
                     .frame(height: 200)
                     .padding(.top, 8)
             }
         }
     }
 
-    private var historySection: some View {
-        Section("最近记录") {
-            ForEach(store.snapshots.prefix(20), id: \.capturedAt) { snapshot in
-                LabeledContent {
-                    Text("¥\(CampusCardFormat.balance(snapshot.balanceYuan))")
-                        .fontWeight(.semibold)
-                } label: {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(snapshot.capturedAt.formatted(date: .numeric, time: .shortened))
-                        if !snapshot.ownerName.isEmpty {
-                            Text(snapshot.ownerName)
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+    @ViewBuilder
+    private var transactionSection: some View {
+        Section("最近消费") {
+            if store.transactions.isEmpty {
+                Text("暂无消费记录")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(store.transactions.prefix(40), id: \.orderId) { transaction in
+                    CampusCardTransactionRow(transaction: transaction)
                 }
             }
         }
     }
 
-    private var chartData: [CampusCardChartPoint] {
-        Array(store.snapshots
-            .prefix(30)
-            .reversed()
-            .map { CampusCardChartPoint(date: $0.capturedAt, balance: $0.balanceYuan) })
+    private var dailySpendingChartData: [CampusCardDailySpendingPoint] {
+        let calendar = Calendar.current
+        let grouped = Dictionary(grouping: store.transactions.filter { $0.signedAmountYuan < 0 }) { transaction in
+            calendar.startOfDay(for: transaction.transactionDateTime)
+        }
+        return grouped
+            .map { date, transactions in
+                let total = transactions.reduce(0) { partial, item in
+                    partial + abs(item.signedAmountYuan)
+                }
+                return CampusCardDailySpendingPoint(date: date, amount: total)
+            }
+            .sorted { $0.date < $1.date }
+            .suffix(7)
+            .map { $0 }
     }
 }
 
-private struct CampusCardChartPoint: Identifiable {
+private struct CampusCardDailySpendingPoint: Identifiable {
     let id = UUID()
     let date: Date
-    let balance: Double
+    let amount: Double
+}
+
+private struct CampusCardTransactionRow: View {
+    let transaction: CampusCardTransaction
+
+    var body: some View {
+        LabeledContent {
+            VStack(alignment: .trailing, spacing: 3) {
+                Text(verbatim: "\(transaction.signSymbol)¥\(CampusCardFormat.balance(abs(transaction.signedAmountYuan)))")
+                    .font(.title3)
+                    .fontWeight(.bold)
+                    .foregroundStyle(.primary)
+                Text("余额 ¥\(CampusCardFormat.balance(transaction.balanceYuan))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(transaction.displayLocation)
+                    .foregroundStyle(.primary)
+                Text(transaction.transactionDateTime.formatted(.dateTime.year().month().day().hour().minute()))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                if !transaction.detailText.isEmpty {
+                    Text(transaction.detailText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
 }
 
 @available(iOS 17.0, *)
-private struct CampusCardBalanceChart: View {
-    let data: [CampusCardChartPoint]
+private struct CampusCardDailySpendingChart: View {
+    let data: [CampusCardDailySpendingPoint]
     @State private var chartSelection: Date?
-
-    private var displayData: [CampusCardChartPoint] {
-        Array(data.suffix(7))
-    }
 
     var body: some View {
         Chart {
-            ForEach(displayData) { item in
+            ForEach(data) { item in
                 LineMark(
                     x: .value("日期", item.date, unit: .day),
-                    y: .value("余额", item.balance)
+                    y: .value("消费", item.amount)
                 )
-                .foregroundStyle(.blue)
+                .foregroundStyle(.orange)
 
                 AreaMark(
                     x: .value("日期", item.date, unit: .day),
-                    y: .value("余额", item.balance)
+                    y: .value("消费", item.amount)
                 )
                 .foregroundStyle(
                     LinearGradient(
-                        colors: [.blue.opacity(0.18), .clear],
+                        colors: [.orange.opacity(0.25), .clear],
                         startPoint: .top,
                         endPoint: .bottom
                     )
@@ -174,7 +205,7 @@ private struct CampusCardBalanceChart: View {
             }
 
             if let chartSelection,
-               let selected = displayData.first(where: {
+               let selected = data.first(where: {
                    Calendar.current.isDate($0.date, inSameDayAs: chartSelection)
                }) {
                 RuleMark(x: .value("日期", selected.date, unit: .day))
@@ -184,7 +215,7 @@ private struct CampusCardBalanceChart: View {
                         VStack(spacing: 2) {
                             Text(selected.date.formatted(.dateTime.month().day()))
                                 .foregroundStyle(.secondary)
-                            Text(verbatim: "¥ \(CampusCardFormat.balance(selected.balance))")
+                            Text(verbatim: "¥ \(CampusCardFormat.balance(selected.amount))")
                                 .font(.headline)
                         }
                         .fixedSize()
@@ -192,7 +223,7 @@ private struct CampusCardBalanceChart: View {
                     }
                 PointMark(
                     x: .value("日期", selected.date, unit: .day),
-                    y: .value("余额", selected.balance)
+                    y: .value("消费", selected.amount)
                 )
                 .symbolSize(36)
             }

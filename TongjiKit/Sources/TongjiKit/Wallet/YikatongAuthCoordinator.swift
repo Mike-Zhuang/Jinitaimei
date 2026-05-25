@@ -18,6 +18,9 @@ public final class YikatongAuthCoordinator: NSObject, ObservableObject {
     private let store: CredentialStore
     private let logger = Logger(subsystem: "com.jinitaimei.app", category: "YikatongAuth")
 
+    private let entryURL = URL(
+        string: "https://pay-yikatong.tongji.edu.cn/berserker-auth/cas/redirect/bamboocloud?targetUrl=https://pay-yikatong.tongji.edu.cn/plat/?name=loginTransit"
+    )!
     private let walletURL = URL(string: "https://pay-yikatong.tongji.edu.cn/plat/wode")!
     private var renewTask: Task<Bool, Never>?
 
@@ -33,8 +36,8 @@ public final class YikatongAuthCoordinator: NSObject, ObservableObject {
     public func renewIfPossible() async -> Bool {
         if let renewTask { return await renewTask.value }
         let task = Task<Bool, Never> { @MainActor in
-            log("启动校园卡续期：访问 plat/wode")
-            webView.load(URLRequest(url: walletURL))
+            log("启动校园卡续期：访问登录中转页")
+            webView.load(URLRequest(url: entryURL))
 
             var attemptedPasswordFill = false
             for tick in 0..<18 {
@@ -50,6 +53,11 @@ public final class YikatongAuthCoordinator: NSObject, ObservableObject {
                    isOnIAM(url) {
                     attemptedPasswordFill = true
                     await tryFillIAMLoginFormIfPossible()
+                } else if let url = webView.url,
+                          url.host?.contains("pay-yikatong.tongji.edu.cn") == true,
+                          tick == 8 {
+                    log("校园卡仍未拿到 Token，尝试主动访问钱包页")
+                    webView.load(URLRequest(url: walletURL))
                 }
 
                 if tick == 4 || tick == 10 || tick == 17 {
@@ -68,19 +76,30 @@ public final class YikatongAuthCoordinator: NSObject, ObservableObject {
 
     private func tryStoreCredentialsFromCurrentPage() async -> Bool {
         let currentURLString = webView.url?.absoluteString ?? ""
-        if let token = extractToken(from: currentURLString) {
+        let extractedToken = extractToken(from: currentURLString)
+        let storedToken: String?
+        if let extractedToken {
+            storedToken = extractedToken
+        } else {
+            storedToken = await readStoredBearerToken()
+        }
+        if let token = storedToken {
             store.set(token, for: CredentialStore.Keys.yikatongBearerToken)
+            log("已提取校园卡 Token，长度=\(token.count)")
         }
 
         let cookieHeader = await yikatongCookieHeader()
         if !cookieHeader.isEmpty {
             store.set(cookieHeader, for: CredentialStore.Keys.yikatongCookies)
+            log("已提取校园卡 Cookie，长度=\(cookieHeader.count)")
         } else if let fallbackCookie = await readDocumentCookieHeader(), !fallbackCookie.isEmpty {
             store.set(fallbackCookie, for: CredentialStore.Keys.yikatongCookies)
+            log("已从 document.cookie 提取校园卡 Cookie，长度=\(fallbackCookie.count)")
         }
 
         let hasToken = store.get(CredentialStore.Keys.yikatongBearerToken)?.isEmpty == false
         let hasCookie = store.get(CredentialStore.Keys.yikatongCookies)?.isEmpty == false
+        log("当前凭证状态：token=\(hasToken) cookie=\(hasCookie) url=\(currentURLString)")
         return hasToken && hasCookie
     }
 
@@ -112,6 +131,27 @@ public final class YikatongAuthCoordinator: NSObject, ObservableObject {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { $0.hasPrefix("JWTUser=") || $0.hasPrefix("TGC=") }
         return values.isEmpty ? nil : values.joined(separator: "; ")
+    }
+
+    private func readStoredBearerToken() async -> String? {
+        let script = """
+        (function() {
+            const candidates = [
+                sessionStorage.getItem('access_token'),
+                localStorage.getItem('access_token'),
+                sessionStorage.getItem('token'),
+                localStorage.getItem('token')
+            ].filter(Boolean);
+            return candidates.length ? candidates[0] : '';
+        })()
+        """
+        let raw = try? await webView.evaluateJavaScript(script)
+        guard let token = JSONUtils.normalizeJavaScriptValue(raw)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !token.isEmpty else {
+            return nil
+        }
+        return token
     }
 
     private func extractToken(from urlString: String) -> String? {
