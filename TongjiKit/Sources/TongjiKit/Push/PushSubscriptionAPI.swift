@@ -75,6 +75,8 @@ private struct SubscriptionPayload: Encodable {
     let teachingNoticeEnabled: Bool
     let starNewActivityEnabled: Bool
     let starRegistrationEnabled: Bool
+    let campusCardLowBalanceEnabled: Bool
+    let campusCardLowBalanceThreshold: Double
     let selectedStarModuleCodes: [String]
     let followedStarActivityIds: [Int64]
 
@@ -87,6 +89,8 @@ private struct SubscriptionPayload: Encodable {
         self.teachingNoticeEnabled = preferences.teachingNoticeEnabled
         self.starNewActivityEnabled = preferences.starNewActivityEnabled
         self.starRegistrationEnabled = preferences.starRegistrationEnabled
+        self.campusCardLowBalanceEnabled = preferences.campusCardLowBalanceEnabled
+        self.campusCardLowBalanceThreshold = preferences.campusCardLowBalanceThreshold
         self.selectedStarModuleCodes = Array(preferences.selectedStarModuleCodes).sorted()
         self.followedStarActivityIds = Array(followedActivityIds).sorted()
     }
@@ -97,6 +101,8 @@ private struct SubscriptionPayload: Encodable {
         case teachingNoticeEnabled = "teaching_notice_enabled"
         case starNewActivityEnabled = "star_new_activity_enabled"
         case starRegistrationEnabled = "star_registration_enabled"
+        case campusCardLowBalanceEnabled = "campus_card_low_balance_enabled"
+        case campusCardLowBalanceThreshold = "campus_card_low_balance_threshold"
         case selectedStarModuleCodes = "selected_star_module_codes"
         case followedStarActivityIds = "followed_star_activity_ids"
     }

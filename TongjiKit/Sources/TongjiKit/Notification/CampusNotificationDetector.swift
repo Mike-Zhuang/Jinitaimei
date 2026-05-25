@@ -10,6 +10,7 @@ public final class CampusNotificationDetector {
     private let followStore: StarActivityFollowStore
     private let teachingKnownIdsKey = "notificationKnownTeachingNoticeIds"
     private let starSnapshotKey = "notificationStarActivitySnapshots"
+    private let campusCardLowStateKey = "notificationCampusCardLowState"
 
     public init(
         defaults: UserDefaults = .standard,
@@ -130,9 +131,40 @@ public final class CampusNotificationDetector {
         saveStarSnapshots(currentSnapshots)
     }
 
+    public func processCampusCardBalance(_ snapshot: CampusCardBalanceSnapshot) async {
+        let preferences = preferenceStore.preferences
+        guard preferences.localNotificationsEnabled,
+              preferences.campusCardLowBalanceEnabled,
+              CampusModel.shared.loggedIn else {
+            return
+        }
+
+        let threshold = max(0, preferences.campusCardLowBalanceThreshold)
+        let isLow = snapshot.balanceYuan <= threshold
+        let previousState = defaults.object(forKey: campusCardLowStateKey) as? Bool
+
+        // 首次仅建基线，不补发历史低余额提醒。
+        guard let previousState else {
+            defaults.set(isLow, forKey: campusCardLowStateKey)
+            return
+        }
+
+        if !previousState && isLow {
+            await notificationManager.deliver(
+                title: "校园卡余额偏低",
+                body: "当前余额 \(CampusCardFormat.balance(snapshot.balanceYuan))，已低于你设置的 \(CampusCardFormat.balance(threshold))",
+                identifier: "campus-card-low-balance",
+                userInfo: ["type": "campusCardLowBalance"]
+            )
+        }
+
+        defaults.set(isLow, forKey: campusCardLowStateKey)
+    }
+
     public func resetBaselines() {
         defaults.removeObject(forKey: teachingKnownIdsKey)
         defaults.removeObject(forKey: starSnapshotKey)
+        defaults.removeObject(forKey: campusCardLowStateKey)
     }
 
     private func loadStarSnapshots() -> [Int64: StarActivitySnapshot] {

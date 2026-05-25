@@ -11,11 +11,14 @@
 | 日程 | 周课表查看（按周切换、点击节次看详情、导出到系统日历） | 一系统 `1.tongji.edu.cn` `findStudentTimetab` + `currentTermCalendar` | v0.1 可用 |
 | 校园 | 卓越星活动列表、筛选排序、个人星值摘要 | STAR 平台 `star.tongji.edu.cn` | v0.1 可用 |
 | 校园 | 教学管理信息系统通知公告（列表、详情、置顶服务卡片） | 一系统 `1.tongji.edu.cn` `commonMsgPublish` | v0.1 可用 |
-| 设置 | 校园账户登录、账户信息、退出登录、自动登录开关 | 同济统一身份认证 + 一系统 session 用户信息 | v0.1 可用 |
+| 校园 | 校园卡余额、最近余额变化趋势、低余额提醒 | 同济校园卡 `pay-yikatong.tongji.edu.cn` | v0.1 可用 |
+| 设置 | 校园账户登录、账户信息、退出登录、自动登录开关、邮件推送与低余额阈值 | 同济统一身份认证 + 一系统 session 用户信息 | v0.1 可用 |
 
 登录方式：**仅同济统一身份认证（iam/ids.tongji.edu.cn）**。用户从 `设置 → 校园账户` 进入登录页，在 WebView 内完成一次 SSO 后，App 会在同一个 WebView 内于遮罩下后台抓取凭证（Cookie + sessionid + AES 加密 studentCode）。STAR 平台的活动列表为公开接口，无需额外登录；个人星值用独立的 Bearer Token，由 `StarAuthCoordinator` 单独维护。
 
 邮件推送：`设置 → 通知` 中可填写接收邮箱并同步到 `https://tjpush.mikezhuang.cn`。如果用户开启“离线邮件推送”并保存同济统一身份账号密码，服务端会加密保存这组凭据，用于低频轮询教务通知；卓越星新活动和报名提醒优先使用公开活动接口，不上传 STAR Token。关闭邮件推送会请求服务器删除订阅和凭据。SMTP 密码、服务端加密主密钥不写入 App 或仓库。
+
+校园卡低余额提醒：`设置 → 通知` 中可单独开启“校园卡低余额提醒”，并手动设置阈值（例如 `10` / `15` / `20` / `30` 元）。App 本地通知与服务端邮件提醒统一使用这一个阈值；首次只建立基线，不补发历史低余额状态，后续只有在“余额从高于阈值变为低于或等于阈值”时才提醒一次。若余额一直处于低位，不会反复打扰；只有余额恢复到阈值以上后再次跌破，才会重新提醒。
 
 ### 长效登录态体系
 
@@ -51,6 +54,7 @@ Jinitaimei/
 │       ├── Course/            # 一系统课表 API + 解析 + SwiftData 仓储
 │       ├── Activity/          # STAR 活动 API + 解析 + SwiftData 仓储
 │       ├── TeachingNotice/    # 一系统通知公告 API + 模型
+│       ├── Wallet/            # 校园卡余额 API / 登录续期 / SwiftData 快照
 │       ├── Profile/           # 一系统 session 用户信息
 │       ├── CampusModel.swift  # 全局登录态
 │       └── Util/              # JSON 等工具
@@ -58,7 +62,7 @@ Jinitaimei/
     └── Sources/TongjiUI/
         ├── Navigation/        # RootView（TabBar + 隐藏续期 WebView + scenePhase 节流检查） / CampusHome
         ├── Components/        # AuthStateBanner（renewing / requiresInteractiveLogin 非阻塞 banner）
-        ├── Pages/             # LoginPage / AutoLoginSettingsView / ActivityListPage / TeachingNoticePage / SettingsPage
+        ├── Pages/             # LoginPage / AutoLoginSettingsView / ActivityListPage / TeachingNoticePage / CampusCardPage / SettingsPage
         └── Calendar/          # CoursePage（周课表）
 ```
 

@@ -112,6 +112,41 @@ private struct NotificationSettingsView: View {
             }
 
             Section {
+                Toggle("低余额提醒", isOn: Binding(
+                    get: { preferenceStore.preferences.campusCardLowBalanceEnabled },
+                    set: { value in
+                        preferenceStore.update { $0.campusCardLowBalanceEnabled = value }
+                    }
+                ))
+
+                HStack {
+                    Text("提醒阈值")
+                    Spacer()
+                    TextField(
+                        "20",
+                        value: Binding(
+                            get: { preferenceStore.preferences.campusCardLowBalanceThreshold },
+                            set: { value in
+                                preferenceStore.update { preferences in
+                                    preferences.campusCardLowBalanceThreshold = min(max(value, 0), 9999)
+                                }
+                            }
+                        ),
+                        format: .number.precision(.fractionLength(0...2))
+                    )
+                    .multilineTextAlignment(.trailing)
+                    .keyboardType(.decimalPad)
+                    .frame(width: 90)
+                    Text("元")
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("校园卡")
+            } footer: {
+                Text("当余额从高于阈值切换为低于或等于阈值时提醒一次；若余额持续偏低，不会反复骚扰。邮件推送将复用同一阈值。")
+            }
+
+            Section {
                 Toggle("新活动但未开始报名", isOn: Binding(
                     get: { preferenceStore.preferences.starNewActivityEnabled },
                     set: { value in
@@ -468,6 +503,7 @@ private struct AccountSheet: View {
                         Button(role: .destructive) {
                             CourseStore(modelContext: modelContext).clearLocalData()
                             ActivityStore(modelContext: modelContext).clearLocalData()
+                            YikatongStore(modelContext: modelContext).clearLocalData()
                             campusModel.logout()
                             dismiss()
                         } label: {

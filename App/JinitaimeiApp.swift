@@ -12,7 +12,7 @@ struct JinitaimeiApp: App {
     init() {
         do {
             modelContainer = try ModelContainer(
-                for: CourseSchedule.self, CampusActivity.self
+                for: CourseSchedule.self, CampusActivity.self, CampusCardBalanceSnapshot.self
             )
         } catch {
             fatalError("SwiftData 初始化失败: \(error)")

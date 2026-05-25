@@ -1,3 +1,4 @@
+import Charts
 import SwiftUI
 import SwiftData
 import TongjiKit
@@ -110,6 +111,7 @@ public struct CampusHome: View {
 private enum CampusService: String, CaseIterable, Codable, Identifiable {
     case starActivity
     case teachingNotice
+    case campusCard
 
     var id: String { rawValue }
 
@@ -120,6 +122,8 @@ private enum CampusService: String, CaseIterable, Codable, Identifiable {
             Label("卓越星活动", systemImage: "star.circle")
         case .teachingNotice:
             Label("教学管理信息系统通知公告", systemImage: "bell.badge")
+        case .campusCard:
+            Label("校园卡", systemImage: "creditcard")
         }
     }
 
@@ -130,6 +134,8 @@ private enum CampusService: String, CaseIterable, Codable, Identifiable {
             StarActivityCard(refreshToken: refreshToken)
         case .teachingNotice:
             TeachingNoticeCard(refreshToken: refreshToken)
+        case .campusCard:
+            CampusCardPinnedCard(refreshToken: refreshToken)
         }
     }
 
@@ -140,6 +146,8 @@ private enum CampusService: String, CaseIterable, Codable, Identifiable {
             ActivityListPageContainer()
         case .teachingNotice:
             TeachingNoticePage()
+        case .campusCard:
+            CampusCardPageContainer()
         }
     }
 }
@@ -159,7 +167,7 @@ private final class CampusHomeModel: ObservableObject {
     init() {
         let defaults = UserDefaults.standard
         self.pinnedServices = Self.load(key: pinnedKey, from: defaults) ?? []
-        self.unpinnedServices = Self.load(key: unpinnedKey, from: defaults) ?? [.starActivity, .teachingNotice]
+        self.unpinnedServices = Self.load(key: unpinnedKey, from: defaults) ?? [.starActivity, .teachingNotice, .campusCard]
         normalize()
     }
 
@@ -414,6 +422,96 @@ private struct TeachingNoticeCard: View {
     }
 }
 
+private struct CampusCardPinnedCard: View {
+    @Environment(\.modelContext) private var modelContext
+    @ObservedObject private var campusModel = CampusModel.shared
+    let refreshToken: UUID
+    @StateObject private var storeHolder = CampusCardStoreHolder()
+
+    var body: some View {
+        PinnedServiceCardLayout(title: "校园卡", systemImage: "creditcard.fill", color: .blue) {
+            if !campusModel.loggedIn {
+                Text("登录后查看校园卡余额")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let store = storeHolder.store, let latest = store.latestSnapshot {
+                HStack(alignment: .bottom, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("余额")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+
+                        HStack(alignment: .firstTextBaseline, spacing: 0) {
+                            Text(CampusCardFormat.balance(latest.balanceYuan))
+                                .font(.system(size: 25, weight: .bold, design: .rounded))
+                                .privacySensitive()
+                            Text(" 元")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+
+                        Text(latest.capturedAt.formatted(date: .abbreviated, time: .shortened))
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    if #available(iOS 17.0, *), store.snapshots.count > 1 {
+                        CampusCardPinnedMiniChart(points: store.snapshots)
+                            .frame(width: 100, height: 40)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let store = storeHolder.store, store.isLoading {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("正在加载校园卡余额")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let store = storeHolder.store, let error = store.lastError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Text("下拉刷新后同步余额")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .task {
+            await prepareStoreIfNeeded()
+            guard let store = storeHolder.store, campusModel.loggedIn, store.latestSnapshot == nil else { return }
+            await store.sync()
+        }
+        .onChange(of: refreshToken) { _, _ in
+            guard campusModel.loggedIn else { return }
+            Task {
+                await prepareStoreIfNeeded()
+                await storeHolder.store?.sync()
+            }
+        }
+        .onChange(of: campusModel.loggedIn) { _, loggedIn in
+            guard let store = storeHolder.store else { return }
+            if !loggedIn {
+                store.clearLocalData()
+            }
+        }
+    }
+
+    private func prepareStoreIfNeeded() async {
+        if storeHolder.store == nil {
+            storeHolder.store = YikatongStore(modelContext: modelContext)
+        }
+    }
+}
+
 private struct PinnedServiceCardLayout<Content: View>: View {
     let title: String
     let systemImage: String
@@ -439,10 +537,57 @@ private struct PinnedServiceCardLayout<Content: View>: View {
     }
 }
 
+@available(iOS 17.0, *)
+private struct CampusCardPinnedMiniChart: View {
+    let points: [CampusCardBalanceSnapshot]
+
+    private var chartPoints: [CampusCardMiniChartPoint] {
+        Array(points.prefix(10).reversed().map {
+            CampusCardMiniChartPoint(date: $0.capturedAt, balance: $0.balanceYuan)
+        })
+    }
+
+    var body: some View {
+        Chart(chartPoints) { point in
+            LineMark(
+                x: .value("时间", point.date),
+                y: .value("余额", point.balance)
+            )
+            .foregroundStyle(.blue)
+
+            AreaMark(
+                x: .value("时间", point.date),
+                y: .value("余额", point.balance)
+            )
+            .foregroundStyle(.blue.opacity(0.12))
+        }
+        .chartXAxis(.hidden)
+        .chartYAxis(.hidden)
+    }
+}
+
+private struct CampusCardMiniChartPoint: Identifiable {
+    let id = UUID()
+    let date: Date
+    let balance: Double
+}
+
 /// 仅用于在 NavigationLink 中拿到 modelContext。
 private struct ActivityListPageContainer: View {
     @Environment(\.modelContext) private var modelContext
     var body: some View {
         ActivityListPage(modelContext: modelContext)
     }
+}
+
+private struct CampusCardPageContainer: View {
+    @Environment(\.modelContext) private var modelContext
+    var body: some View {
+        CampusCardPage(modelContext: modelContext)
+    }
+}
+
+@MainActor
+private final class CampusCardStoreHolder: ObservableObject {
+    @Published var store: YikatongStore?
 }

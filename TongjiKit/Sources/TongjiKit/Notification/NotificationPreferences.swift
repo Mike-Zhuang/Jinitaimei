@@ -6,6 +6,8 @@ public struct NotificationPreferences: Codable, Equatable, Sendable {
     public var teachingNoticeEnabled: Bool
     public var starNewActivityEnabled: Bool
     public var starRegistrationEnabled: Bool
+    public var campusCardLowBalanceEnabled: Bool
+    public var campusCardLowBalanceThreshold: Double
     public var selectedStarModuleCodes: Set<String>
     public var emailRecipient: String
 
@@ -15,6 +17,8 @@ public struct NotificationPreferences: Codable, Equatable, Sendable {
         teachingNoticeEnabled: Bool = true,
         starNewActivityEnabled: Bool = true,
         starRegistrationEnabled: Bool = true,
+        campusCardLowBalanceEnabled: Bool = false,
+        campusCardLowBalanceThreshold: Double = 20,
         selectedStarModuleCodes: Set<String> = Self.defaultStarModuleCodes,
         emailRecipient: String = ""
     ) {
@@ -23,6 +27,8 @@ public struct NotificationPreferences: Codable, Equatable, Sendable {
         self.teachingNoticeEnabled = teachingNoticeEnabled
         self.starNewActivityEnabled = starNewActivityEnabled
         self.starRegistrationEnabled = starRegistrationEnabled
+        self.campusCardLowBalanceEnabled = campusCardLowBalanceEnabled
+        self.campusCardLowBalanceThreshold = campusCardLowBalanceThreshold
         self.selectedStarModuleCodes = selectedStarModuleCodes
         self.emailRecipient = emailRecipient
     }
@@ -41,6 +47,8 @@ public struct NotificationPreferences: Codable, Equatable, Sendable {
         case teachingNoticeEnabled
         case starNewActivityEnabled
         case starRegistrationEnabled
+        case campusCardLowBalanceEnabled
+        case campusCardLowBalanceThreshold
         case selectedStarModuleCodes
         case emailRecipient
     }
@@ -64,6 +72,14 @@ public struct NotificationPreferences: Codable, Equatable, Sendable {
             Bool.self,
             forKey: .starRegistrationEnabled
         ) ?? true
+        self.campusCardLowBalanceEnabled = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .campusCardLowBalanceEnabled
+        ) ?? false
+        self.campusCardLowBalanceThreshold = try container.decodeIfPresent(
+            Double.self,
+            forKey: .campusCardLowBalanceThreshold
+        ) ?? 20
         self.selectedStarModuleCodes = try container.decodeIfPresent(
             Set<String>.self,
             forKey: .selectedStarModuleCodes
