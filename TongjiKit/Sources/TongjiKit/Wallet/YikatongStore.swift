@@ -79,9 +79,11 @@ public final class YikatongStore: ObservableObject {
             try clearAll()
             try context.save()
             snapshots = []
+            transactions = []
             lastError = nil
         } catch {
             snapshots = []
+            transactions = []
             lastError = error.localizedDescription
         }
     }

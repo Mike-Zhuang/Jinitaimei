@@ -9,6 +9,7 @@ import TongjiKit
 /// 十余个服务入口，并支持置顶服务卡片；此处保留可扩展结构。
 public struct CampusHome: View {
 
+    @Environment(\.modelContext) private var modelContext
     @ObservedObject private var campusModel = CampusModel.shared
     @StateObject private var model = CampusHomeModel()
     @State private var showEditor = false
@@ -103,6 +104,8 @@ public struct CampusHome: View {
                 await CampusNotificationDetector.shared.checkTeachingNoticesIfNeeded()
             }
         }
+
+        await YikatongStore(modelContext: modelContext).sync()
 
         refreshToken = UUID()
     }

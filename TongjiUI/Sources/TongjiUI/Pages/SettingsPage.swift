@@ -123,7 +123,7 @@ private struct NotificationSettingsView: View {
                     Text("提醒阈值")
                     Spacer()
                     TextField(
-                        "20",
+                        "50",
                         value: Binding(
                             get: { preferenceStore.preferences.campusCardLowBalanceThreshold },
                             set: { value in

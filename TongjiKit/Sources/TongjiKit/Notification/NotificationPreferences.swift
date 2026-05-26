@@ -18,7 +18,7 @@ public struct NotificationPreferences: Codable, Equatable, Sendable {
         starNewActivityEnabled: Bool = true,
         starRegistrationEnabled: Bool = true,
         campusCardLowBalanceEnabled: Bool = false,
-        campusCardLowBalanceThreshold: Double = 20,
+        campusCardLowBalanceThreshold: Double = 50,
         selectedStarModuleCodes: Set<String> = Self.defaultStarModuleCodes,
         emailRecipient: String = ""
     ) {
@@ -79,7 +79,7 @@ public struct NotificationPreferences: Codable, Equatable, Sendable {
         self.campusCardLowBalanceThreshold = try container.decodeIfPresent(
             Double.self,
             forKey: .campusCardLowBalanceThreshold
-        ) ?? 20
+        ) ?? 50
         self.selectedStarModuleCodes = try container.decodeIfPresent(
             Set<String>.self,
             forKey: .selectedStarModuleCodes

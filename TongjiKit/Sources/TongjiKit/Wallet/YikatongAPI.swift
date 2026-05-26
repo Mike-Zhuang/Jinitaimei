@@ -60,7 +60,9 @@ public struct CampusCardTransactionPayload: Equatable, Sendable {
 /// 同济校园卡（一卡通）API。
 ///
 /// 协议移植自 `wish_drom/Services/DataProviders/YikatongBalanceProvider.cs`：
-/// 请求 `queryCard` 时必须同时带上 `JWTUser/TGC` Cookie 和 `synjones-auth` Bearer Token。
+/// 请求 `queryCard` 时优先同时带上校园卡 Cookie 和 `synjones-auth` Bearer Token。
+/// 真机上校园卡 H5 有时只下发 Bearer Token，因此 Cookie 缺失时先尝试 token-only，
+/// 若接口返回 401/403 再触发续期。
 public final class YikatongAPI {
     private let apiBase = URL(string: "https://pay-yikatong.tongji.edu.cn")!
     private let balancePath = "/berserker-app/ykt/tsm/queryCard?synAccessSource=h5"
@@ -87,16 +89,16 @@ public final class YikatongAPI {
     }
 
     public func fetchBalanceOnce() async throws -> CampusCardBalancePayload {
-        guard let cookie = currentCookieHeader(), !cookie.isEmpty else {
-            throw AuthError.expired("未找到校园卡登录凭证")
-        }
         guard let token = currentBearerToken(), !token.isEmpty else {
             throw AuthError.expired("未找到校园卡访问令牌")
         }
+        let cookie = currentCookieHeader()
 
         let url = URL(string: "\(apiBase.absoluteString)\(balancePath)")!
         var request = URLRequest(url: url)
-        request.setValue(cookie, forHTTPHeaderField: "Cookie")
+        if let cookie, !cookie.isEmpty {
+            request.setValue(cookie, forHTTPHeaderField: "Cookie")
+        }
         request.setValue("bearer \(token)", forHTTPHeaderField: "synjones-auth")
         request.setValue("h5", forHTTPHeaderField: "synaccesssource")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -105,7 +107,7 @@ public final class YikatongAPI {
             forHTTPHeaderField: "User-Agent"
         )
         request.timeoutInterval = 15
-        log("请求校园卡余额 API")
+        log("请求校园卡余额 API，cookie=\(cookie?.isEmpty == false)")
 
         let (data, response) = try await session.data(for: request)
         try ensureAuth(response: response)
@@ -124,12 +126,10 @@ public final class YikatongAPI {
     }
 
     public func fetchTransactionsOnce(maxPages: Int = 7) async throws -> [CampusCardTransactionPayload] {
-        guard let cookie = currentCookieHeader(), !cookie.isEmpty else {
-            throw AuthError.expired("未找到校园卡登录凭证")
-        }
         guard let token = currentBearerToken(), !token.isEmpty else {
             throw AuthError.expired("未找到校园卡访问令牌")
         }
+        let cookie = currentCookieHeader()
 
         var allTransactions: [CampusCardTransactionPayload] = []
         var seenOrderIds = Set<String>()
@@ -138,7 +138,9 @@ public final class YikatongAPI {
             let path = String(format: transactionsPath, page)
             let url = URL(string: "\(apiBase.absoluteString)\(path)")!
             var request = URLRequest(url: url)
-            request.setValue(cookie, forHTTPHeaderField: "Cookie")
+            if let cookie, !cookie.isEmpty {
+                request.setValue(cookie, forHTTPHeaderField: "Cookie")
+            }
             request.setValue("bearer \(token)", forHTTPHeaderField: "synjones-auth")
             request.setValue("h5", forHTTPHeaderField: "synaccesssource")
             request.setValue("application/json", forHTTPHeaderField: "Accept")
