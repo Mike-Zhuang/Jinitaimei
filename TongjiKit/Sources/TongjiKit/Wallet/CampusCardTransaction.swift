@@ -52,23 +52,45 @@ public final class CampusCardTransaction {
     }
 
     public var displayLocation: String {
-        if !locationName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return locationName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let description = cleanedTransactionDescription {
+            return description
         }
-        if !transactionDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return transactionDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let payName = cleanedDisplayText(payName), !isGenericTransactionText(payName) {
+            return payName
         }
-        if !payName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return payName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let location = cleanedDisplayText(locationName), !isMachineLocation(location) {
+            return location
         }
         return "校园卡交易"
     }
 
     public var detailText: String {
-        [transactionDescription, turnoverType, payName]
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && $0 != displayLocation }
-            .joined(separator: " · ")
+        let details = [payName, turnoverType]
+            .compactMap { cleanedDisplayText($0) }
+            .filter { value in
+                value != displayLocation &&
+                    !isGenericTransactionText(value) &&
+                    !isMachineLocation(value)
+            }
+        return Array(NSOrderedSet(array: details)).compactMap { $0 as? String }.joined(separator: " · ")
+    }
+
+    public var hasValidTransactionDate: Bool {
+        transactionDateTime > Date(timeIntervalSince1970: 946_684_800)
+    }
+
+    private var cleanedTransactionDescription: String? {
+        guard var value = cleanedDisplayText(transactionDescription) else { return nil }
+        let suffixes = [
+            "-电子账户消费",
+            "－电子账户消费",
+            "-消费",
+            "－消费"
+        ]
+        for suffix in suffixes where value.hasSuffix(suffix) {
+            value = String(value.dropLast(suffix.count))
+        }
+        return cleanedDisplayText(value)
     }
 
     private var isExpense: Bool {
@@ -99,5 +121,31 @@ public final class CampusCardTransaction {
             return true
         }
         return true
+    }
+
+    private func cleanedDisplayText(_ value: String) -> String? {
+        let cleaned = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "　", with: " ")
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        guard !cleaned.isEmpty else { return nil }
+        return cleaned
+    }
+
+    private func isMachineLocation(_ value: String) -> Bool {
+        value.range(of: #"^\d{1,4}[-－]\d{1,4}$"#, options: .regularExpression) != nil
+    }
+
+    private func isGenericTransactionText(_ value: String) -> Bool {
+        let genericValues: Set<String> = [
+            "消费",
+            "充值",
+            "电子账户消费",
+            "电子账户",
+            "校园卡消费",
+            "支付",
+            "付款"
+        ]
+        return genericValues.contains(value)
     }
 }

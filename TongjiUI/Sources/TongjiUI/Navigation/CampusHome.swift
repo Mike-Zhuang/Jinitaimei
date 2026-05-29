@@ -105,7 +105,7 @@ public struct CampusHome: View {
             }
         }
 
-        await YikatongStore(modelContext: modelContext).sync()
+        await YikatongStore(modelContext: modelContext).sync(force: true)
 
         refreshToken = UUID()
     }
@@ -391,14 +391,20 @@ private struct TeachingNoticeCard: View {
             }
         }
         .task {
-            guard campusModel.loggedIn, latestNotice == nil, errorMessage == nil else { return }
+            guard campusModel.loggedIn, latestNotice == nil else { return }
             await loadLatestNotice()
         }
-        .onChange(of: campusModel.loggedIn) { _, loggedIn in
-            latestNotice = nil
-            errorMessage = nil
-            if loggedIn {
-                Task { await loadLatestNotice() }
+        .onChange(of: campusModel.authState) { oldState, newState in
+            if newState == .loggedOut {
+                latestNotice = nil
+                errorMessage = nil
+                return
+            }
+            if newState == .valid {
+                let recoveredFromExpiredState = oldState == .renewing ||
+                                                oldState == .expiredRecoverable ||
+                                                oldState == .requiresInteractiveLogin
+                Task { await loadLatestNotice(force: recoveredFromExpiredState) }
             }
         }
         .onChange(of: refreshToken) { _, _ in
@@ -439,32 +445,20 @@ private struct CampusCardPinnedCard: View {
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else if let store = storeHolder.store, let latest = store.latestSnapshot {
-                HStack(alignment: .bottom, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Text(verbatim: "¥\(CampusCardFormat.balance(latest.balanceYuan))")
+                            .font(.system(size: 24, weight: .bold, design: .rounded))
+                            .privacySensitive()
                         Text("余额")
                             .font(.caption)
                             .foregroundColor(.secondary)
-
-                        HStack(alignment: .firstTextBaseline, spacing: 0) {
-                            Text(CampusCardFormat.balance(latest.balanceYuan))
-                                .font(.system(size: 25, weight: .bold, design: .rounded))
-                                .privacySensitive()
-                            Text(" 元")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-
-                        Text(latest.capturedAt.formatted(date: .abbreviated, time: .shortened))
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
+                        Spacer()
                     }
 
-                    Spacer(minLength: 8)
-
-                    if #available(iOS 17.0, *), !dailySpendingPoints(from: store.transactions).isEmpty {
-                        CampusCardPinnedMiniChart(points: dailySpendingPoints(from: store.transactions))
-                            .frame(width: 100, height: 40)
-                    }
+                    Text(latest.capturedAt.formatted(date: .abbreviated, time: .shortened))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             } else if let store = storeHolder.store, store.isLoading {
@@ -497,7 +491,7 @@ private struct CampusCardPinnedCard: View {
             guard campusModel.loggedIn else { return }
             Task {
                 await prepareStoreIfNeeded()
-                await storeHolder.store?.sync()
+                await storeHolder.store?.sync(force: true)
             }
         }
         .onChange(of: campusModel.loggedIn) { _, loggedIn in
@@ -516,7 +510,7 @@ private struct CampusCardPinnedCard: View {
 
     private func dailySpendingPoints(from transactions: [CampusCardTransaction]) -> [CampusCardMiniChartPoint] {
         let calendar = Calendar.current
-        let grouped = Dictionary(grouping: transactions.filter { $0.signedAmountYuan < 0 }) { transaction in
+        let grouped = Dictionary(grouping: transactions.filter { $0.hasValidTransactionDate && $0.signedAmountYuan < 0 }) { transaction in
             calendar.startOfDay(for: transaction.transactionDateTime)
         }
         return grouped

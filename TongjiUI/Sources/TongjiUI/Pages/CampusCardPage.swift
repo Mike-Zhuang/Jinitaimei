@@ -53,7 +53,7 @@ public struct CampusCardPage: View {
         .navigationTitle("校园卡")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable {
-            await store.sync()
+            await store.sync(force: true)
         }
         .task {
             guard campusModel.loggedIn, store.latestSnapshot == nil else { return }
@@ -77,18 +77,6 @@ public struct CampusCardPage: View {
                 Text("校园卡余额")
             }
 
-            if !snapshot.ownerName.isEmpty {
-                LabeledContent("持卡人", value: snapshot.ownerName)
-                    .font(.footnote)
-            }
-            if !snapshot.account.isEmpty {
-                LabeledContent("账户", value: snapshot.account)
-                    .font(.footnote)
-            }
-            if !snapshot.cardIdentifier.isEmpty {
-                LabeledContent("卡号", value: snapshot.cardIdentifier)
-                    .font(.footnote)
-            }
             LabeledContent("更新时间", value: snapshot.capturedAt.formatted(date: .numeric, time: .shortened))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -109,11 +97,13 @@ public struct CampusCardPage: View {
     @ViewBuilder
     private var transactionSection: some View {
         Section("最近消费") {
-            if store.transactions.isEmpty {
+            let validTransactions = store.transactions.filter(\.hasValidTransactionDate)
+            let displayTransactions = validTransactions.isEmpty ? store.transactions : validTransactions
+            if displayTransactions.isEmpty {
                 Text("暂无消费记录")
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(store.transactions.prefix(40), id: \.orderId) { transaction in
+                ForEach(displayTransactions.prefix(40), id: \.orderId) { transaction in
                     CampusCardTransactionRow(transaction: transaction)
                 }
             }
@@ -122,19 +112,20 @@ public struct CampusCardPage: View {
 
     private var dailySpendingChartData: [CampusCardDailySpendingPoint] {
         let calendar = Calendar.current
-        let grouped = Dictionary(grouping: store.transactions.filter { $0.signedAmountYuan < 0 }) { transaction in
+        let validTransactions = store.transactions.filter {
+            $0.hasValidTransactionDate && $0.signedAmountYuan < 0
+        }
+        let grouped = Dictionary(grouping: validTransactions) { transaction in
             calendar.startOfDay(for: transaction.transactionDateTime)
         }
-        return grouped
-            .map { date, transactions in
-                let total = transactions.reduce(0) { partial, item in
-                    partial + abs(item.signedAmountYuan)
-                }
-                return CampusCardDailySpendingPoint(date: date, amount: total)
+        let endDate = calendar.startOfDay(for: validTransactions.first?.transactionDateTime ?? Date())
+        return (0..<7).compactMap { offset in
+            guard let date = calendar.date(byAdding: .day, value: offset - 6, to: endDate) else { return nil }
+            let total = grouped[date, default: []].reduce(0) { partial, item in
+                partial + abs(item.signedAmountYuan)
             }
-            .sorted { $0.date < $1.date }
-            .suffix(7)
-            .map { $0 }
+            return CampusCardDailySpendingPoint(date: date, amount: total)
+        }
     }
 }
 
@@ -162,7 +153,8 @@ private struct CampusCardTransactionRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(transaction.displayLocation)
                     .foregroundStyle(.primary)
-                Text(transaction.transactionDateTime.formatted(.dateTime.year().month().day().hour().minute()))
+                    .lineLimit(2)
+                Text(transaction.hasValidTransactionDate ? transaction.transactionDateTime.formatted(.dateTime.year().month().day().hour().minute()) : "时间待解析")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 if !transaction.detailText.isEmpty {
@@ -181,6 +173,33 @@ private struct CampusCardTransactionRow: View {
 private struct CampusCardDailySpendingChart: View {
     let data: [CampusCardDailySpendingPoint]
     @State private var chartSelection: Date?
+
+    private var xDomain: ClosedRange<Date> {
+        let first = data.first?.date ?? Date()
+        let last = data.last?.date ?? first
+        let padding: TimeInterval = 12 * 60 * 60
+        return first.addingTimeInterval(-padding) ... last.addingTimeInterval(padding)
+    }
+
+    private var yDomain: ClosedRange<Double> {
+        let maxAmount = data.map(\.amount).max() ?? 0
+        let roundedMax = max(20, ceil(maxAmount / 20) * 20)
+        return 0 ... roundedMax
+    }
+
+    private var axisDates: [Date] {
+        data.enumerated().compactMap { index, item in
+            index.isMultiple(of: 2) ? item.date : nil
+        }
+    }
+
+    private var selectedPoint: CampusCardDailySpendingPoint? {
+        guard let chartSelection else { return nil }
+        return data.min {
+            abs($0.date.timeIntervalSince(chartSelection)) <
+            abs($1.date.timeIntervalSince(chartSelection))
+        }
+    }
 
     var body: some View {
         Chart {
@@ -204,14 +223,18 @@ private struct CampusCardDailySpendingChart: View {
                 )
             }
 
-            if let chartSelection,
-               let selected = data.first(where: {
-                   Calendar.current.isDate($0.date, inSameDayAs: chartSelection)
-               }) {
+            if let selected = selectedPoint {
                 RuleMark(x: .value("日期", selected.date, unit: .day))
                     .lineStyle(StrokeStyle(lineWidth: 2))
                     .foregroundStyle(.secondary)
-                    .annotation(position: .top, spacing: 0) {
+                    .annotation(
+                        position: .top,
+                        spacing: 0,
+                        overflowResolution: .init(
+                            x: .fit(to: .chart),
+                            y: .disabled
+                        )
+                    ) {
                         VStack(spacing: 2) {
                             Text(selected.date.formatted(.dateTime.month().day()))
                                 .foregroundStyle(.secondary)
@@ -225,11 +248,21 @@ private struct CampusCardDailySpendingChart: View {
                     x: .value("日期", selected.date, unit: .day),
                     y: .value("消费", selected.amount)
                 )
-                .symbolSize(36)
+                .symbolSize(70)
+                .foregroundStyle(Color(uiColor: .secondarySystemGroupedBackground))
+
+                PointMark(
+                    x: .value("日期", selected.date, unit: .day),
+                    y: .value("消费", selected.amount)
+                )
+                .symbolSize(40)
+                .foregroundStyle(.orange)
             }
         }
+        .chartXScale(domain: xDomain)
+        .chartYScale(domain: yDomain)
         .chartXAxis {
-            AxisMarks(values: .stride(by: .day, count: 2)) { _ in
+            AxisMarks(values: axisDates) { _ in
                 AxisValueLabel(format: .dateTime.day(), centered: true)
             }
         }

@@ -27,6 +27,7 @@ public final class YikatongAuthCoordinator: NSObject, ObservableObject {
     private let tokenURL = URL(string: "https://pay-yikatong.tongji.edu.cn/berserker-auth/oauth/token")!
     private var renewTask: Task<Bool, Never>?
     private var bridgeMessagesLogged = Set<String>()
+    private var currentRenewCapturedToken = false
 
     public init(store: CredentialStore = .shared) {
         self.store = store
@@ -51,6 +52,7 @@ public final class YikatongAuthCoordinator: NSObject, ObservableObject {
         if let renewTask { return await renewTask.value }
         let task = Task<Bool, Never> { @MainActor in
             log("启动校园卡续期：访问登录中转页")
+            currentRenewCapturedToken = false
             webView.load(URLRequest(url: entryURL))
 
             var attemptedPasswordFill = false
@@ -110,6 +112,7 @@ public final class YikatongAuthCoordinator: NSObject, ObservableObject {
         }
         if let token = storedToken {
             store.set(token, for: CredentialStore.Keys.yikatongBearerToken)
+            currentRenewCapturedToken = true
             log("已提取校园卡 Token，长度=\(token.count)")
         }
 
@@ -117,12 +120,12 @@ public final class YikatongAuthCoordinator: NSObject, ObservableObject {
         if !cookieHeader.isEmpty {
             store.set(cookieHeader, for: CredentialStore.Keys.yikatongCookies)
             log("已提取校园卡 Cookie，长度=\(cookieHeader.count)")
-        } else if let fallbackCookie = await readDocumentCookieHeader(), !fallbackCookie.isEmpty {
+        } else if let fallbackCookie = await readDocumentCookieHeader(), isUsefulCookieHeader(fallbackCookie) {
             store.set(fallbackCookie, for: CredentialStore.Keys.yikatongCookies)
-            log("已从 document.cookie 提取校园卡 Cookie，长度=\(fallbackCookie.count)")
+            log("已从 document.cookie 提取校园卡 Cookie，长度=\(fallbackCookie.count)，名称=\(fallbackCookie.cookieNamesForLog)")
         }
 
-        let hasToken = store.get(CredentialStore.Keys.yikatongBearerToken)?.isEmpty == false
+        let hasToken = currentRenewCapturedToken
         let hasCookie = store.get(CredentialStore.Keys.yikatongCookies)?.isEmpty == false
         log("当前凭证状态：token=\(hasToken) cookie=\(hasCookie) url=\(currentURLString)")
         return hasToken
@@ -146,6 +149,17 @@ public final class YikatongAuthCoordinator: NSObject, ObservableObject {
             .map { "\($0.name)=\($0.value)" }
 
         return values.joined(separator: "; ")
+    }
+
+    private func isUsefulCookieHeader(_ cookie: String) -> Bool {
+        let values = cookie
+            .split(separator: ";")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.contains("=") && $0.split(separator: "=", maxSplits: 1).count == 2 }
+        return values.contains { item in
+            guard let value = item.split(separator: "=", maxSplits: 1).last else { return false }
+            return value.trimmingCharacters(in: .whitespacesAndNewlines).count >= 8
+        }
     }
 
     private func readDocumentCookieHeader() async -> String? {
@@ -176,14 +190,12 @@ public final class YikatongAuthCoordinator: NSObject, ObservableObject {
                 return out;
             }
             const candidates = [
-                window.__jinitaimei_yikatong_token,
-                sessionStorage.getItem('access_token'),
-                localStorage.getItem('access_token')
+                window.__jinitaimei_yikatong_token
             ].filter(Boolean);
             for (const item of values(sessionStorage).concat(values(localStorage))) {
                 const key = String(item.key || '').toLowerCase();
                 const value = String(item.value || '');
-                if (key === 'access_token' || value.includes('synjones-auth') || value.includes('"access_token"')) {
+                if (value.includes('synjones-auth') || value.includes('"access_token"')) {
                     candidates.push(value);
                 }
             }
@@ -594,6 +606,7 @@ extension YikatongAuthCoordinator: WKScriptMessageHandler {
             let raw = String(describing: message.body)
             if let token = extractToken(from: raw) {
                 store.set(token, for: CredentialStore.Keys.yikatongBearerToken)
+                currentRenewCapturedToken = true
                 log("从 SynJSNative 消息提取校园卡 Token，长度=\(token.count)")
             }
         }
