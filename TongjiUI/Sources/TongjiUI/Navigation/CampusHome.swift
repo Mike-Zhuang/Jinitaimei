@@ -106,6 +106,8 @@ public struct CampusHome: View {
         }
 
         await YikatongStore(modelContext: modelContext).sync(force: true)
+        await ExamScheduleStore(modelContext: modelContext).sync()
+        await GradeStore(modelContext: modelContext).sync()
 
         refreshToken = UUID()
     }
@@ -115,6 +117,8 @@ private enum CampusService: String, CaseIterable, Codable, Identifiable {
     case starActivity
     case teachingNotice
     case campusCard
+    case examSchedule
+    case gradeReport
 
     var id: String { rawValue }
 
@@ -127,6 +131,10 @@ private enum CampusService: String, CaseIterable, Codable, Identifiable {
             Label("教学管理信息系统通知公告", systemImage: "bell.badge")
         case .campusCard:
             Label("校园卡", systemImage: "creditcard")
+        case .examSchedule:
+            Label("考试安排", systemImage: "book.closed")
+        case .gradeReport:
+            Label("课程成绩", systemImage: "graduationcap.circle")
         }
     }
 
@@ -139,6 +147,10 @@ private enum CampusService: String, CaseIterable, Codable, Identifiable {
             TeachingNoticeCard(refreshToken: refreshToken)
         case .campusCard:
             CampusCardPinnedCard(refreshToken: refreshToken)
+        case .examSchedule:
+            ExamSchedulePinnedCard(refreshToken: refreshToken)
+        case .gradeReport:
+            GradeReportPinnedCard(refreshToken: refreshToken)
         }
     }
 
@@ -151,6 +163,10 @@ private enum CampusService: String, CaseIterable, Codable, Identifiable {
             TeachingNoticePage()
         case .campusCard:
             CampusCardPageContainer()
+        case .examSchedule:
+            ExamSchedulePageContainer()
+        case .gradeReport:
+            GradeReportPageContainer()
         }
     }
 }
@@ -170,7 +186,7 @@ private final class CampusHomeModel: ObservableObject {
     init() {
         let defaults = UserDefaults.standard
         self.pinnedServices = Self.load(key: pinnedKey, from: defaults) ?? []
-        self.unpinnedServices = Self.load(key: unpinnedKey, from: defaults) ?? [.starActivity, .teachingNotice, .campusCard]
+        self.unpinnedServices = Self.load(key: unpinnedKey, from: defaults) ?? [.starActivity, .teachingNotice, .campusCard, .examSchedule, .gradeReport]
         normalize()
     }
 
@@ -526,6 +542,172 @@ private struct CampusCardPinnedCard: View {
     }
 }
 
+private struct ExamSchedulePinnedCard: View {
+    @Environment(\.modelContext) private var modelContext
+    @ObservedObject private var campusModel = CampusModel.shared
+    let refreshToken: UUID
+    @StateObject private var storeHolder = ExamScheduleStoreHolder()
+
+    var body: some View {
+        PinnedServiceCardLayout(title: "考试安排", systemImage: "book.closed.fill", color: .indigo) {
+            if !campusModel.loggedIn {
+                Text("登录后查看考试安排")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let store = storeHolder.store, let nextExam = store.nextExam {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(nextExam.courseName)
+                        .font(.callout)
+                        .foregroundColor(.primary)
+                        .lineLimit(2)
+                    Text("\(nextExam.displayDate) \(nextExam.displayTime)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let store = storeHolder.store, store.isLoading {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("正在加载考试安排")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let store = storeHolder.store, let error = store.lastError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let store = storeHolder.store, let lastSync = store.lastSyncTime {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("暂无近期考试")
+                        .font(.callout)
+                    Text(lastSync.formatted(date: .abbreviated, time: .shortened))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Text("下拉刷新后同步考试安排")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .task {
+            await prepareStoreIfNeeded()
+            guard let store = storeHolder.store, campusModel.loggedIn, store.exams.isEmpty else { return }
+            await store.sync()
+        }
+        .onChange(of: refreshToken) { _, _ in
+            guard campusModel.loggedIn else { return }
+            Task {
+                await prepareStoreIfNeeded()
+                await storeHolder.store?.sync()
+            }
+        }
+        .onChange(of: campusModel.loggedIn) { _, loggedIn in
+            guard let store = storeHolder.store else { return }
+            if !loggedIn {
+                store.clearLocalData()
+            }
+        }
+    }
+
+    private func prepareStoreIfNeeded() async {
+        if storeHolder.store == nil {
+            storeHolder.store = ExamScheduleStore(modelContext: modelContext)
+        }
+    }
+}
+
+private struct GradeReportPinnedCard: View {
+    @Environment(\.modelContext) private var modelContext
+    @ObservedObject private var campusModel = CampusModel.shared
+    let refreshToken: UUID
+    @StateObject private var storeHolder = GradeStoreHolder()
+
+    var body: some View {
+        PinnedServiceCardLayout(title: "课程成绩", systemImage: "graduationcap.circle.fill", color: .green) {
+            if !campusModel.loggedIn {
+                Text("登录后查看课程成绩")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let store = storeHolder.store, let summary = store.summary {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Text(clean(summary.totalGradePoint))
+                            .font(.system(size: 24, weight: .bold, design: .rounded))
+                        Text("总绩点")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                    }
+                    Text("实修学分 \(clean(summary.actualCredit)) · 最近学期 \(store.latestTerm?.averagePoint ?? "暂无")")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let store = storeHolder.store, store.isLoading {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("正在加载课程成绩")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let store = storeHolder.store, let error = store.lastError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Text("下拉刷新后同步成绩")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .task {
+            await prepareStoreIfNeeded()
+            guard let store = storeHolder.store, campusModel.loggedIn, store.summary == nil else { return }
+            await store.sync()
+        }
+        .onChange(of: refreshToken) { _, _ in
+            guard campusModel.loggedIn else { return }
+            Task {
+                await prepareStoreIfNeeded()
+                await storeHolder.store?.sync()
+            }
+        }
+        .onChange(of: campusModel.loggedIn) { _, loggedIn in
+            guard let store = storeHolder.store else { return }
+            if !loggedIn {
+                store.clearLocalData()
+            }
+        }
+    }
+
+    private func prepareStoreIfNeeded() async {
+        if storeHolder.store == nil {
+            storeHolder.store = GradeStore(modelContext: modelContext)
+        }
+    }
+
+    private func clean(_ value: String) -> String {
+        guard let number = Double(value) else { return value.isEmpty ? "暂无" : value }
+        if number.rounded() == number {
+            return String(Int(number))
+        }
+        return String(format: "%.2f", number)
+    }
+}
+
 private struct PinnedServiceCardLayout<Content: View>: View {
     let title: String
     let systemImage: String
@@ -595,7 +777,31 @@ private struct CampusCardPageContainer: View {
     }
 }
 
+private struct ExamSchedulePageContainer: View {
+    @Environment(\.modelContext) private var modelContext
+    var body: some View {
+        ExamSchedulePage(modelContext: modelContext)
+    }
+}
+
+private struct GradeReportPageContainer: View {
+    @Environment(\.modelContext) private var modelContext
+    var body: some View {
+        GradeReportPage(modelContext: modelContext)
+    }
+}
+
 @MainActor
 private final class CampusCardStoreHolder: ObservableObject {
     @Published var store: YikatongStore?
+}
+
+@MainActor
+private final class ExamScheduleStoreHolder: ObservableObject {
+    @Published var store: ExamScheduleStore?
+}
+
+@MainActor
+private final class GradeStoreHolder: ObservableObject {
+    @Published var store: GradeStore?
 }

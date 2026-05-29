@@ -504,6 +504,8 @@ private struct AccountSheet: View {
                             CourseStore(modelContext: modelContext).clearLocalData()
                             ActivityStore(modelContext: modelContext).clearLocalData()
                             YikatongStore(modelContext: modelContext).clearLocalData()
+                            ExamScheduleStore(modelContext: modelContext).clearLocalData()
+                            GradeStore(modelContext: modelContext).clearLocalData()
                             campusModel.logout()
                             dismiss()
                         } label: {

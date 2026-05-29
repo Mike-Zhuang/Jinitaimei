@@ -504,73 +504,79 @@ private struct TeachingNoticeAttachmentSection: View {
     }
 }
 
-private struct TeachingNoticePreviewItem: Identifiable {
+private struct TeachingNoticePreviewItem: Identifiable, Hashable {
     let id = UUID()
     let url: URL
 }
 
 /// 附件预览。
 ///
-/// 把 `QLPreviewController` 包进 `UINavigationController`，恢复 QuickLook 自带的
-/// 导航栏，从而在右上角显示系统分享(action)按钮；左上角补一个「完成」用于关闭。
+/// 用一个宿主 `UIViewController` 原生 `present` 出 `QLPreviewController`，
+/// 这是拿到 QuickLook 完整原生 chrome（完成 + 分享 + 铅笔标注）的唯一可靠方式
+/// ——若把 QLPreviewController 直接塞进 SwiftUI 的 representable，这些按钮不会出现。
+///
+/// 再用 `isModalInPresentation = true` 关掉 QuickLook 的下滑关闭手势：
+/// 顶部轻轻下滑只会滚动/缩放文档，退出只能点左上角「完成」。
 private struct TeachingNoticeQuickLookPreview: UIViewControllerRepresentable {
     let url: URL
     let onDismiss: () -> Void
 
-    func makeUIViewController(context: Context) -> UINavigationController {
+    func makeUIViewController(context: Context) -> QuickLookHostController {
+        let host = QuickLookHostController()
+        host.url = url
+        host.onDismiss = onDismiss
+        return host
+    }
+
+    func updateUIViewController(_ controller: QuickLookHostController, context: Context) {
+        controller.url = url
+    }
+}
+
+/// 负责在自身出现后原生弹出 QLPreviewController 的宿主控制器。
+private final class QuickLookHostController: UIViewController,
+    QLPreviewControllerDataSource, QLPreviewControllerDelegate {
+    var url: URL?
+    var onDismiss: (() -> Void)?
+    private var hasPresented = false
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        guard !hasPresented, url != nil else { return }
+        hasPresented = true
+
         let preview = QLPreviewController()
-        preview.dataSource = context.coordinator
-        preview.delegate = context.coordinator
-        preview.navigationItem.leftBarButtonItem = UIBarButtonItem(
-            barButtonSystemItem: .done,
-            target: context.coordinator,
-            action: #selector(Coordinator.handleDone)
-        )
-        let navigationController = UINavigationController(rootViewController: preview)
-        return navigationController
+        preview.dataSource = self
+        preview.delegate = self
+        // 禁用下滑关闭，避免轻轻一滑误退出；退出走 QuickLook 自带的「完成」按钮。
+        preview.isModalInPresentation = true
+        preview.modalPresentationStyle = .fullScreen
+        present(preview, animated: true)
     }
 
-    func updateUIViewController(_ controller: UINavigationController, context: Context) {
-        context.coordinator.url = url
-        (controller.viewControllers.first as? QLPreviewController)?.reloadData()
+    func numberOfPreviewItems(in controller: QLPreviewController) -> Int {
+        url == nil ? 0 : 1
     }
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(url: url, onDismiss: onDismiss)
+    func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem {
+        (url ?? URL(fileURLWithPath: "/dev/null")) as NSURL
     }
 
-    final class Coordinator: NSObject, QLPreviewControllerDataSource, QLPreviewControllerDelegate {
-        var url: URL
-        let onDismiss: () -> Void
+    /// 允许标注/编辑：直接把改动写回原文件，这样标注完仍可分享同一份（含标注）文件。
+    func previewController(
+        _ controller: QLPreviewController,
+        editingModeFor previewItem: QLPreviewItem
+    ) -> QLPreviewItemEditingMode {
+        .updateContents
+    }
 
-        init(url: URL, onDismiss: @escaping () -> Void) {
-            self.url = url
-            self.onDismiss = onDismiss
-        }
+    func previewController(_ controller: QLPreviewController, didUpdateContentsOf previewItem: QLPreviewItem) {
+        print("[TeachingNotice] 附件标注已写回原文件")
+    }
 
-        @objc func handleDone() {
-            onDismiss()
-        }
-
-        func numberOfPreviewItems(in controller: QLPreviewController) -> Int {
-            1
-        }
-
-        func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem {
-            url as NSURL
-        }
-
-        /// 允许标注/编辑：直接把改动写回原文件，这样标注完仍可分享同一份（含标注）文件。
-        func previewController(
-            _ controller: QLPreviewController,
-            editingModeFor previewItem: QLPreviewItem
-        ) -> QLPreviewItemEditingMode {
-            .updateContents
-        }
-
-        func previewController(_ controller: QLPreviewController, didUpdateContentsOf previewItem: QLPreviewItem) {
-            print("[TeachingNotice] 附件标注已写回原文件")
-        }
+    /// QuickLook 自身的「完成」关闭后，连带收起 SwiftUI 的 fullScreenCover。
+    func previewControllerDidDismiss(_ controller: QLPreviewController) {
+        onDismiss?()
     }
 }
 
