@@ -32,6 +32,12 @@ public final class TeachingNoticeAPI {
         }
     }
 
+    public func downloadAttachment(_ attachment: TeachingNoticeAttachment) async throws -> URL {
+        try await withAuthRetry { [self] in
+            try await downloadAttachmentOnce(attachment)
+        }
+    }
+
     // MARK: - Once 版本
 
     public func fetchNoticesOnce(page: Int, pageSize: Int) async throws -> TeachingNoticePage {
@@ -107,13 +113,61 @@ public final class TeachingNoticeAPI {
             throw AuthError.loginFlowFailed(payload.msg.isEmpty ? "通知公告详情响应异常" : payload.msg)
         }
 
+        let attachments = item.commonAttachmentList?.map {
+            TeachingNoticeAttachment(
+                id: $0.id,
+                relationId: $0.relationId,
+                fileName: $0.fileName,
+                fileLocation: $0.fileLacation
+            )
+        } ?? []
+
         return TeachingNoticeDetail(
             id: item.id,
             title: item.title,
             contentHTML: item.content ?? "",
             publishTimeText: item.publishTime ?? "",
-            createUser: item.createUser
+            createUser: item.createUser,
+            attachments: attachments
         )
+    }
+
+    public func downloadAttachmentOnce(_ attachment: TeachingNoticeAttachment) async throws -> URL {
+        guard let cookie = currentCookieHeader(), !cookie.isEmpty else {
+            throw AuthError.notLoggedIn("未找到登录凭证，请先在设置中登录校园账户")
+        }
+        let sessionId = store.get(CredentialStore.Keys.tongjiSessionId) ?? ""
+        let objectKey = try encryptedObjectKey(for: attachment.fileLocation)
+        let url = URL(string: "\(apiHost)/api/commonservice/obsfile/downloadfile?objectkey=\(objectKey)")!
+        var request = URLRequest(url: url)
+        applyAuthHeaders(&request, cookie: cookie, sessionId: sessionId)
+        request.setValue("*/*", forHTTPHeaderField: "Accept")
+        request.setValue(nil, forHTTPHeaderField: "Content-Type")
+
+        let (temporaryURL, response) = try await session.download(for: request)
+        try ensureAuth(response: response, url: url)
+        guard let http = response as? HTTPURLResponse else {
+            throw AuthError.loginFlowFailed("附件下载响应异常")
+        }
+        let contentType = http.value(forHTTPHeaderField: "Content-Type") ?? ""
+        let fileSize = fileSize(at: temporaryURL)
+        print(
+            "[TeachingNotice] 附件下载响应 id=\(attachment.id) file=\(attachment.fileName) status=\(http.statusCode) type=\(contentType) bytes=\(fileSize)"
+        )
+        guard (200..<300).contains(http.statusCode),
+              !contentType.localizedCaseInsensitiveContains("application/json"),
+              !contentType.localizedCaseInsensitiveContains("text/html"),
+              fileSize > 0 else {
+            throw AuthError.loginFlowFailed("附件下载失败，请重试")
+        }
+
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent(safeFileName(attachment.fileName), isDirectory: false)
+        if FileManager.default.fileExists(atPath: destination.path) {
+            try FileManager.default.removeItem(at: destination)
+        }
+        try FileManager.default.moveItem(at: temporaryURL, to: destination)
+        return destination
     }
 
     private func currentCookieHeader() -> String? {
@@ -137,6 +191,28 @@ public final class TeachingNoticeAPI {
             forHTTPHeaderField: "User-Agent"
         )
         request.timeoutInterval = 20
+    }
+
+    private func encryptedObjectKey(for fileLocation: String) throws -> String {
+        guard let aesKey = store.get(CredentialStore.Keys.tongjiAesKey),
+              let aesIv = store.get(CredentialStore.Keys.tongjiAesIv),
+              !aesKey.isEmpty,
+              !aesIv.isEmpty else {
+            throw AuthError.notLoggedIn("缺少一系统加密凭证，请重新登录校园账户")
+        }
+        let encrypted = try StudentCodeCipher.encryptOneSystemText(fileLocation, aesKey: aesKey, aesIv: aesIv)
+        return StudentCodeCipher.encodeURIComponent(encrypted)
+    }
+
+    private func fileSize(at url: URL) -> Int64 {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return attributes?[.size] as? Int64 ?? 0
+    }
+
+    private func safeFileName(_ fileName: String) -> String {
+        let invalid = CharacterSet(charactersIn: "/\\:?%*|\"<>")
+        let cleaned = fileName.components(separatedBy: invalid).joined(separator: "_")
+        return cleaned.isEmpty ? "attachment" : cleaned
     }
 
     /// 401/403 仅抛 `AuthError.expired`；不 remove。
@@ -206,6 +282,14 @@ private struct TeachingNoticeItem: Decodable {
     let marReadStatus: Bool?
     let createUser: String?
     let content: String?
+    let commonAttachmentList: [TeachingNoticeAttachmentItem]?
+}
+
+private struct TeachingNoticeAttachmentItem: Decodable {
+    let id: Int
+    let relationId: Int
+    let fileName: String
+    let fileLacation: String
 }
 
 private struct TeachingNoticeDetailResponse: Decodable {

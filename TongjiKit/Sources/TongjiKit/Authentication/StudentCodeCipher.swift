@@ -9,6 +9,11 @@ public enum StudentCodeCipher {
 
     /// 用从 `sessiondata` 提取的 `aesKey` / `aesIv` 加密 `uid`，生成 API 参数 `studentCode`。
     public static func encryptStudentCode(uid: String, aesKey: String, aesIv: String) throws -> String {
+        try encryptOneSystemText(uid, aesKey: aesKey, aesIv: aesIv)
+    }
+
+    /// 复用一系统前端通用加密链路，加密任意文本参数。
+    public static func encryptOneSystemText(_ text: String, aesKey: String, aesIv: String) throws -> String {
         let processedKey = paramHandler(aesKey)
         let processedIv = paramHandler(aesIv)
 
@@ -17,15 +22,20 @@ public enum StudentCodeCipher {
             throw CipherError.invalidKey
         }
 
-        // encodeURIComponent(uid)：百分号编码所有非 ALPHA / DIGIT / -._~ 字符
-        let encodedUid = uid.addingPercentEncoding(withAllowedCharacters: .uriComponentAllowed) ?? uid
-        guard let plainBytes = encodedUid.data(using: .utf8) else {
+        // encodeURIComponent(text)：百分号编码所有非 ALPHA / DIGIT / -._~ 字符
+        let encodedText = encodeURIComponent(text)
+        guard let plainBytes = encodedText.data(using: .utf8) else {
             throw CipherError.invalidPlaintext
         }
 
         let cipher = try aesCbcEncrypt(data: plainBytes, key: keyBytes, iv: ivBytes)
         let base64 = cipher.base64EncodedString()
-        return base64.addingPercentEncoding(withAllowedCharacters: .uriComponentAllowed) ?? base64
+        return encodeURIComponent(base64)
+    }
+
+    /// JS `encodeURIComponent` 等价实现，供需要二次编码的接口复用。
+    public static func encodeURIComponent(_ text: String) -> String {
+        text.addingPercentEncoding(withAllowedCharacters: .uriComponentAllowed) ?? text
     }
 
     /// 前端 `paramHandler`：把字符串相邻字符两两交换。`"abcd"` → `"badc"`，奇数末尾保留。

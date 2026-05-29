@@ -75,6 +75,21 @@ public struct TeachingNotice: Identifiable, Codable, Equatable, Hashable {
     }()
 }
 
+/// 通知公告附件摘要。
+public struct TeachingNoticeAttachment: Identifiable, Codable, Equatable, Hashable {
+    public let id: Int
+    public let relationId: Int
+    public let fileName: String
+    public let fileLocation: String
+
+    public init(id: Int, relationId: Int, fileName: String, fileLocation: String) {
+        self.id = id
+        self.relationId = relationId
+        self.fileName = fileName
+        self.fileLocation = fileLocation
+    }
+}
+
 /// 通知公告详情，只保留 App 展示需要的字段。
 public struct TeachingNoticeDetail: Identifiable, Codable, Equatable {
     public let id: Int
@@ -82,13 +97,22 @@ public struct TeachingNoticeDetail: Identifiable, Codable, Equatable {
     public let contentHTML: String
     public let publishTimeText: String
     public let createUser: String?
+    public let attachments: [TeachingNoticeAttachment]
 
-    public init(id: Int, title: String, contentHTML: String, publishTimeText: String, createUser: String?) {
+    public init(
+        id: Int,
+        title: String,
+        contentHTML: String,
+        publishTimeText: String,
+        createUser: String?,
+        attachments: [TeachingNoticeAttachment] = []
+    ) {
         self.id = id
         self.title = title
         self.contentHTML = contentHTML
         self.publishTimeText = publishTimeText
         self.createUser = createUser
+        self.attachments = attachments
     }
 
     public var publishDate: Date {

@@ -2,6 +2,7 @@ import SwiftUI
 import TongjiKit
 import WebKit
 import UIKit
+import QuickLook
 
 /// 教学管理信息系统通知公告列表。
 public struct TeachingNoticePage: View {
@@ -187,6 +188,8 @@ private struct TeachingNoticeDetailPage: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var didAppear = false
+    @State private var attachmentStates: [Int: AttachmentDownloadState] = [:]
+    @State private var previewItem: TeachingNoticePreviewItem?
 
     var body: some View {
         Group {
@@ -198,10 +201,22 @@ private struct TeachingNoticeDetailPage: View {
                         description: Text("接口已返回详情，但没有正文内容")
                     )
                 } else {
-                    TeachingNoticeHTMLView(html: wrappedHTML(detail.contentHTML))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(Color(.systemBackground))
-                        .ignoresSafeArea(.container, edges: .bottom)
+                    VStack(spacing: 0) {
+                        TeachingNoticeHTMLView(html: wrappedHTML(detail.contentHTML))
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .background(Color(.systemBackground))
+
+                        if !detail.attachments.isEmpty {
+                            Divider()
+                            TeachingNoticeAttachmentSection(
+                                attachments: detail.attachments,
+                                states: attachmentStates,
+                                onTap: { attachment in
+                                    Task { await handleAttachmentTap(attachment) }
+                                }
+                            )
+                        }
+                    }
                 }
             } else if isLoading {
                 ProgressView("正在加载通知正文…")
@@ -219,6 +234,9 @@ private struct TeachingNoticeDetailPage: View {
         .background(Color(.systemBackground))
         .navigationTitle(notice.title)
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $previewItem) { item in
+            TeachingNoticeQuickLookPreview(url: item.url)
+        }
         .onAppear {
             guard !didAppear else { return }
             didAppear = true
@@ -253,11 +271,35 @@ private struct TeachingNoticeDetailPage: View {
         defer { isLoading = false }
         do {
             detail = try await TeachingNoticeAPI().fetchNoticeDetail(id: notice.id)
-            print("[TeachingNotice] 页面准备渲染 id=\(notice.id) htmlLen=\(detail?.contentHTML.count ?? 0)")
+            print(
+                "[TeachingNotice] 页面准备渲染 id=\(notice.id) htmlLen=\(detail?.contentHTML.count ?? 0) attachments=\(detail?.attachments.count ?? 0)"
+            )
             errorMessage = nil
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
             print("[TeachingNotice] 正文加载失败 id=\(notice.id): \(error)")
+        }
+    }
+
+    @MainActor
+    private func handleAttachmentTap(_ attachment: TeachingNoticeAttachment) async {
+        if case .downloaded(let url) = attachmentStates[attachment.id] {
+            previewItem = TeachingNoticePreviewItem(url: url)
+            return
+        }
+        if case .downloading = attachmentStates[attachment.id] {
+            return
+        }
+
+        attachmentStates[attachment.id] = .downloading
+        do {
+            let url = try await TeachingNoticeAPI().downloadAttachment(attachment)
+            attachmentStates[attachment.id] = .downloaded(url)
+            previewItem = TeachingNoticePreviewItem(url: url)
+        } catch {
+            let message = (error as? LocalizedError)?.errorDescription ?? "附件下载失败，请重试"
+            attachmentStates[attachment.id] = .failed(message)
+            print("[TeachingNotice] 附件下载失败 id=\(attachment.id) file=\(attachment.fileName): \(error)")
         }
     }
 
@@ -293,6 +335,145 @@ private struct TeachingNoticeDetailPage: View {
         </body>
         </html>
         """
+    }
+}
+
+private enum AttachmentDownloadState: Equatable {
+    case idle
+    case downloading
+    case downloaded(URL)
+    case failed(String)
+}
+
+private struct TeachingNoticeAttachmentSection: View {
+    let attachments: [TeachingNoticeAttachment]
+    let states: [Int: AttachmentDownloadState]
+    let onTap: (TeachingNoticeAttachment) -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("附件")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 18)
+                    .padding(.top, 12)
+                    .padding(.bottom, 4)
+
+                ForEach(attachments) { attachment in
+                    Button {
+                        onTap(attachment)
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "doc.fill")
+                                .font(.title3)
+                                .foregroundStyle(.blue)
+                                .frame(width: 28)
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(attachment.fileName)
+                                    .font(.body)
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(2)
+                                if case .failed(let message) = states[attachment.id] ?? .idle {
+                                    Text(message)
+                                        .font(.caption)
+                                        .foregroundStyle(.red)
+                                        .lineLimit(1)
+                                }
+                            }
+
+                            Spacer(minLength: 8)
+
+                            trailingView(for: states[attachment.id] ?? .idle)
+                        }
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 10)
+                    }
+                    .buttonStyle(.plain)
+
+                    if attachment.id != attachments.last?.id {
+                        Divider()
+                            .padding(.leading, 58)
+                    }
+                }
+
+                Color.clear
+                    .frame(height: 10)
+            }
+        }
+        .scrollIndicators(.visible)
+        .frame(height: min(attachmentPreferredHeight, attachmentHeightLimit))
+        .background(Color(.systemBackground))
+    }
+
+    private var attachmentPreferredHeight: CGFloat {
+        let headerHeight: CGFloat = 42
+        let rowHeight: CGFloat = 72
+        let bottomPadding: CGFloat = 10
+        return min(220, headerHeight + rowHeight * CGFloat(attachments.count) + bottomPadding)
+    }
+
+    private var attachmentHeightLimit: CGFloat {
+        min(220, UIScreen.main.bounds.height * 0.3)
+    }
+
+    @ViewBuilder
+    private func trailingView(for state: AttachmentDownloadState) -> some View {
+        switch state {
+        case .idle:
+            Image(systemName: "arrow.down.circle")
+                .foregroundStyle(.secondary)
+        case .downloading:
+            ProgressView()
+        case .downloaded:
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        case .failed:
+            Image(systemName: "arrow.clockwise.circle")
+                .foregroundStyle(.orange)
+        }
+    }
+}
+
+private struct TeachingNoticePreviewItem: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+private struct TeachingNoticeQuickLookPreview: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> QLPreviewController {
+        let controller = QLPreviewController()
+        controller.dataSource = context.coordinator
+        return controller
+    }
+
+    func updateUIViewController(_ controller: QLPreviewController, context: Context) {
+        context.coordinator.url = url
+        controller.reloadData()
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(url: url)
+    }
+
+    final class Coordinator: NSObject, QLPreviewControllerDataSource {
+        var url: URL
+
+        init(url: URL) {
+            self.url = url
+        }
+
+        func numberOfPreviewItems(in controller: QLPreviewController) -> Int {
+            1
+        }
+
+        func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem {
+            url as NSURL
+        }
     }
 }
 

@@ -177,8 +177,10 @@ private struct CampusCardDailySpendingChart: View {
     private var xDomain: ClosedRange<Date> {
         let first = data.first?.date ?? Date()
         let last = data.last?.date ?? first
-        let padding: TimeInterval = 12 * 60 * 60
-        return first.addingTimeInterval(-padding) ... last.addingTimeInterval(padding)
+        let day: TimeInterval = 24 * 60 * 60
+        let leftPadding = 0.18 * day
+        let rightPadding = 0.65 * day
+        return first.addingTimeInterval(-leftPadding) ... last.addingTimeInterval(rightPadding)
     }
 
     private var yDomain: ClosedRange<Double> {
