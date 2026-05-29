@@ -190,33 +190,20 @@ private struct TeachingNoticeDetailPage: View {
     @State private var didAppear = false
     @State private var attachmentStates: [Int: AttachmentDownloadState] = [:]
     @State private var previewItem: TeachingNoticePreviewItem?
+    @State private var contentHeight: CGFloat = 1
 
     var body: some View {
         Group {
             if let detail {
-                if detail.contentHTML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if detail.contentHTML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    && detail.attachments.isEmpty {
                     ContentUnavailableView(
                         "正文为空",
                         systemImage: "doc.text.magnifyingglass",
                         description: Text("接口已返回详情，但没有正文内容")
                     )
                 } else {
-                    VStack(spacing: 0) {
-                        TeachingNoticeHTMLView(html: wrappedHTML(detail.contentHTML))
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .background(Color(.systemBackground))
-
-                        if !detail.attachments.isEmpty {
-                            Divider()
-                            TeachingNoticeAttachmentSection(
-                                attachments: detail.attachments,
-                                states: attachmentStates,
-                                onTap: { attachment in
-                                    Task { await handleAttachmentTap(attachment) }
-                                }
-                            )
-                        }
-                    }
+                    detailContent(for: detail)
                 }
             } else if isLoading {
                 ProgressView("正在加载通知正文…")
@@ -234,8 +221,11 @@ private struct TeachingNoticeDetailPage: View {
         .background(Color(.systemBackground))
         .navigationTitle(notice.title)
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(item: $previewItem) { item in
-            TeachingNoticeQuickLookPreview(url: item.url)
+        .fullScreenCover(item: $previewItem) { item in
+            TeachingNoticeQuickLookPreview(url: item.url) {
+                previewItem = nil
+            }
+            .ignoresSafeArea()
         }
         .onAppear {
             guard !didAppear else { return }
@@ -255,6 +245,65 @@ private struct TeachingNoticeDetailPage: View {
         }
     }
 
+    /// 单一垂直滚动流：头部信息 → 正文（自适应高度，内部滚动关闭）→ 附件区。
+    @ViewBuilder
+    private func detailContent(for detail: TeachingNoticeDetail) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                detailHeader(for: detail)
+
+                if !detail.contentHTML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    TeachingNoticeHTMLView(html: wrappedHTML(detail.contentHTML), height: $contentHeight)
+                        .frame(height: contentHeight)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
+                }
+
+                if !detail.attachments.isEmpty {
+                    TeachingNoticeAttachmentSection(
+                        attachments: detail.attachments,
+                        states: attachmentStates,
+                        onTap: { attachment in
+                            Task { await handleAttachmentTap(attachment) }
+                        }
+                    )
+                    .padding(.top, 8)
+                }
+            }
+            .padding(.bottom, 12)
+        }
+        .background(Color(.systemBackground))
+    }
+
+    @ViewBuilder
+    private func detailHeader(for detail: TeachingNoticeDetail) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(detail.title)
+                .font(.title3)
+                .fontWeight(.semibold)
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 12) {
+                if let createUser = detail.createUser?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !createUser.isEmpty {
+                    Label(createUser, systemImage: "person.crop.circle")
+                        .lineLimit(1)
+                }
+                Label(detail.displayDate, systemImage: "clock")
+                    .lineLimit(1)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            Divider()
+                .padding(.top, 4)
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 16)
+        .padding(.bottom, 8)
+    }
+
     private func loadDetailIfNeeded(trigger: String) async {
         guard detail == nil, !isLoading else { return }
         await loadDetail(force: false, trigger: trigger)
@@ -270,9 +319,11 @@ private struct TeachingNoticeDetailPage: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            detail = try await TeachingNoticeAPI().fetchNoticeDetail(id: notice.id)
+            let loaded = try await TeachingNoticeAPI().fetchNoticeDetail(id: notice.id)
+            detail = loaded
+            restoreDownloadedStates(for: loaded.attachments)
             print(
-                "[TeachingNotice] 页面准备渲染 id=\(notice.id) htmlLen=\(detail?.contentHTML.count ?? 0) attachments=\(detail?.attachments.count ?? 0)"
+                "[TeachingNotice] 页面准备渲染 id=\(notice.id) htmlLen=\(loaded.contentHTML.count) attachments=\(loaded.attachments.count)"
             )
             errorMessage = nil
         } catch {
@@ -281,13 +332,31 @@ private struct TeachingNoticeDetailPage: View {
         }
     }
 
+    /// 根据本地缓存恢复「已下载」状态：详情页重新进入时不再显示成未下载、避免重复下载。
+    private func restoreDownloadedStates(for attachments: [TeachingNoticeAttachment]) {
+        let api = TeachingNoticeAPI()
+        for attachment in attachments {
+            if case .downloaded = attachmentStates[attachment.id] { continue }
+            if let cached = api.cachedAttachmentURL(for: attachment) {
+                attachmentStates[attachment.id] = .downloaded(cached)
+            }
+        }
+    }
+
     @MainActor
     private func handleAttachmentTap(_ attachment: TeachingNoticeAttachment) async {
-        if case .downloaded(let url) = attachmentStates[attachment.id] {
+        if case .downloaded(let url) = attachmentStates[attachment.id],
+           FileManager.default.fileExists(atPath: url.path) {
             previewItem = TeachingNoticePreviewItem(url: url)
             return
         }
         if case .downloading = attachmentStates[attachment.id] {
+            return
+        }
+        // 缓存命中：直接预览，不重复下载。
+        if let cached = TeachingNoticeAPI().cachedAttachmentURL(for: attachment) {
+            attachmentStates[attachment.id] = .downloaded(cached)
+            previewItem = TeachingNoticePreviewItem(url: cached)
             return
         }
 
@@ -310,13 +379,22 @@ private struct TeachingNoticeDetailPage: View {
         <head>
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5">
         <style>
+        :root {
+            color-scheme: light dark;
+        }
         body {
-            margin: 18px;
+            /* 上下留白交给外层 SwiftUI 间距，避免与头部/附件区重复留白。 */
+            margin: 0 18px;
             color: #111111;
             font: -apple-system-body;
             line-height: 1.55;
             word-break: break-word;
             overflow-wrap: anywhere;
+        }
+        @media (prefers-color-scheme: dark) {
+            body {
+                color: #F2F2F7;
+            }
         }
         img, table {
             max-width: 100%;
@@ -351,72 +429,61 @@ private struct TeachingNoticeAttachmentSection: View {
     let onTap: (TeachingNoticeAttachment) -> Void
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
+        // 不再内嵌 ScrollView / 固定高度：附件行内联平铺，与正文共享外层同一滚动流。
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
                 Text("附件")
                     .font(.subheadline)
                     .fontWeight(.semibold)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 18)
-                    .padding(.top, 12)
-                    .padding(.bottom, 4)
+                Text("\(attachments.count)")
+                    .font(.caption)
+                    .monospacedDigit()
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 18)
+            .padding(.top, 4)
+            .padding(.bottom, 6)
 
-                ForEach(attachments) { attachment in
-                    Button {
-                        onTap(attachment)
-                    } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: "doc.fill")
-                                .font(.title3)
-                                .foregroundStyle(.blue)
-                                .frame(width: 28)
+            ForEach(attachments) { attachment in
+                Button {
+                    onTap(attachment)
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "doc.fill")
+                            .font(.title3)
+                            .foregroundStyle(.blue)
+                            .frame(width: 28)
 
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(attachment.fileName)
-                                    .font(.body)
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(2)
-                                if case .failed(let message) = states[attachment.id] ?? .idle {
-                                    Text(message)
-                                        .font(.caption)
-                                        .foregroundStyle(.red)
-                                        .lineLimit(1)
-                                }
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(attachment.fileName)
+                                .font(.body)
+                                .foregroundStyle(.primary)
+                                .lineLimit(2)
+                            if case .failed(let message) = states[attachment.id] ?? .idle {
+                                Text(message)
+                                    .font(.caption)
+                                    .foregroundStyle(.red)
+                                    .lineLimit(1)
                             }
-
-                            Spacer(minLength: 8)
-
-                            trailingView(for: states[attachment.id] ?? .idle)
                         }
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 10)
-                    }
-                    .buttonStyle(.plain)
 
-                    if attachment.id != attachments.last?.id {
-                        Divider()
-                            .padding(.leading, 58)
+                        Spacer(minLength: 8)
+
+                        trailingView(for: states[attachment.id] ?? .idle)
                     }
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 10)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
 
-                Color.clear
-                    .frame(height: 10)
+                if attachment.id != attachments.last?.id {
+                    Divider()
+                        .padding(.leading, 58)
+                }
             }
         }
-        .scrollIndicators(.visible)
-        .frame(height: min(attachmentPreferredHeight, attachmentHeightLimit))
         .background(Color(.systemBackground))
-    }
-
-    private var attachmentPreferredHeight: CGFloat {
-        let headerHeight: CGFloat = 42
-        let rowHeight: CGFloat = 72
-        let bottomPadding: CGFloat = 10
-        return min(220, headerHeight + rowHeight * CGFloat(attachments.count) + bottomPadding)
-    }
-
-    private var attachmentHeightLimit: CGFloat {
-        min(220, UIScreen.main.bounds.height * 0.3)
     }
 
     @ViewBuilder
@@ -442,29 +509,47 @@ private struct TeachingNoticePreviewItem: Identifiable {
     let url: URL
 }
 
+/// 附件预览。
+///
+/// 把 `QLPreviewController` 包进 `UINavigationController`，恢复 QuickLook 自带的
+/// 导航栏，从而在右上角显示系统分享(action)按钮；左上角补一个「完成」用于关闭。
 private struct TeachingNoticeQuickLookPreview: UIViewControllerRepresentable {
     let url: URL
+    let onDismiss: () -> Void
 
-    func makeUIViewController(context: Context) -> QLPreviewController {
-        let controller = QLPreviewController()
-        controller.dataSource = context.coordinator
-        return controller
+    func makeUIViewController(context: Context) -> UINavigationController {
+        let preview = QLPreviewController()
+        preview.dataSource = context.coordinator
+        preview.delegate = context.coordinator
+        preview.navigationItem.leftBarButtonItem = UIBarButtonItem(
+            barButtonSystemItem: .done,
+            target: context.coordinator,
+            action: #selector(Coordinator.handleDone)
+        )
+        let navigationController = UINavigationController(rootViewController: preview)
+        return navigationController
     }
 
-    func updateUIViewController(_ controller: QLPreviewController, context: Context) {
+    func updateUIViewController(_ controller: UINavigationController, context: Context) {
         context.coordinator.url = url
-        controller.reloadData()
+        (controller.viewControllers.first as? QLPreviewController)?.reloadData()
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(url: url)
+        Coordinator(url: url, onDismiss: onDismiss)
     }
 
-    final class Coordinator: NSObject, QLPreviewControllerDataSource {
+    final class Coordinator: NSObject, QLPreviewControllerDataSource, QLPreviewControllerDelegate {
         var url: URL
+        let onDismiss: () -> Void
 
-        init(url: URL) {
+        init(url: URL, onDismiss: @escaping () -> Void) {
             self.url = url
+            self.onDismiss = onDismiss
+        }
+
+        @objc func handleDone() {
+            onDismiss()
         }
 
         func numberOfPreviewItems(in controller: QLPreviewController) -> Int {
@@ -474,11 +559,29 @@ private struct TeachingNoticeQuickLookPreview: UIViewControllerRepresentable {
         func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem {
             url as NSURL
         }
+
+        /// 允许标注/编辑：直接把改动写回原文件，这样标注完仍可分享同一份（含标注）文件。
+        func previewController(
+            _ controller: QLPreviewController,
+            editingModeFor previewItem: QLPreviewItem
+        ) -> QLPreviewItemEditingMode {
+            .updateContents
+        }
+
+        func previewController(_ controller: QLPreviewController, didUpdateContentsOf previewItem: QLPreviewItem) {
+            print("[TeachingNotice] 附件标注已写回原文件")
+        }
     }
 }
 
+/// 自适应高度的正文 WebView。
+///
+/// 关闭 WKWebView 自身滚动，把渲染后的内容高度经 `height` 回传给 SwiftUI，
+/// 让它作为普通子视图嵌入外层统一的 `ScrollView`，从而实现「正文 + 附件」
+/// 单一滚动流。
 private struct TeachingNoticeHTMLView: UIViewRepresentable {
     let html: String
+    @Binding var height: CGFloat
 
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
@@ -488,7 +591,10 @@ private struct TeachingNoticeHTMLView: UIViewRepresentable {
         webView.isOpaque = false
         webView.backgroundColor = .systemBackground
         webView.scrollView.backgroundColor = .systemBackground
-        webView.scrollView.alwaysBounceVertical = true
+        // 关闭内部滚动：高度由内容决定，滚动交给外层 SwiftUI ScrollView。
+        webView.scrollView.isScrollEnabled = false
+        webView.scrollView.bounces = false
+        context.coordinator.observeContentSize(of: webView)
         return webView
     }
 
@@ -500,11 +606,41 @@ private struct TeachingNoticeHTMLView: UIViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator()
+        Coordinator(height: $height)
+    }
+
+    static func dismantleUIView(_ webView: WKWebView, coordinator: Coordinator) {
+        coordinator.stopObserving(webView)
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         var lastHTML: String?
+        private let height: Binding<CGFloat>
+        private var observation: NSKeyValueObservation?
+
+        init(height: Binding<CGFloat>) {
+            self.height = height
+        }
+
+        /// 观察 contentSize：图片等资源异步加载完成后高度会变化，需要持续同步。
+        func observeContentSize(of webView: WKWebView) {
+            observation = webView.scrollView.observe(\.contentSize, options: [.new]) { [weak self] scrollView, _ in
+                self?.updateHeight(scrollView.contentSize.height)
+            }
+        }
+
+        func stopObserving(_ webView: WKWebView) {
+            observation?.invalidate()
+            observation = nil
+        }
+
+        private func updateHeight(_ newHeight: CGFloat) {
+            let resolved = max(newHeight, 1)
+            guard abs(height.wrappedValue - resolved) > 0.5 else { return }
+            DispatchQueue.main.async { [height] in
+                height.wrappedValue = resolved
+            }
+        }
 
         func webView(
             _ webView: WKWebView,
@@ -522,6 +658,14 @@ private struct TeachingNoticeHTMLView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             print("[TeachingNotice] WebView didFinish url=\(webView.url?.absoluteString ?? "about:blank")")
+            // 兜底：首帧 contentSize 可能滞后，加载完成后主动再测一次真实文档高度。
+            webView.evaluateJavaScript("document.documentElement.scrollHeight") { [weak self] value, _ in
+                if let number = value as? CGFloat {
+                    self?.updateHeight(number)
+                } else if let number = value as? Double {
+                    self?.updateHeight(CGFloat(number))
+                }
+            }
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {

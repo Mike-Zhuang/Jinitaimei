@@ -38,6 +38,16 @@ public final class TeachingNoticeAPI {
         }
     }
 
+    /// 返回该附件已下载到本地的缓存文件 URL（若存在）。
+    ///
+    /// 用于详情页重新进入时恢复「已下载」状态，避免重复下载。
+    /// 缓存落在 `temporaryDirectory`，与 `downloadAttachmentOnce` 的落盘路径一致。
+    public func cachedAttachmentURL(for attachment: TeachingNoticeAttachment) -> URL? {
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent(safeFileName(attachment.fileName), isDirectory: false)
+        return FileManager.default.fileExists(atPath: destination.path) ? destination : nil
+    }
+
     // MARK: - Once 版本
 
     public func fetchNoticesOnce(page: Int, pageSize: Int) async throws -> TeachingNoticePage {
