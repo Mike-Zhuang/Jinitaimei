@@ -68,6 +68,11 @@ App (Jinitaimei target)  ──►  TongjiUI  ──►  TongjiKit
 2. 在 `TongjiUI/Sources/TongjiUI/Pages/` 创建 `<FeatureName>Page.swift`。
 3. 在 `TongjiUI/Navigation/CampusHome.swift` 新增一个 `NavigationLink` 入口。
 4. 在 `App/JinitaimeiApp.swift` 的 `ModelContainer(for: ...)` 中注册新 `@Model` 类。
+5. 同步更新 [README.md](README.md)、[docs/PROTOCOLS.md](docs/PROTOCOLS.md) 和 [docs/FEATURE-BEHAVIOR.md](docs/FEATURE-BEHAVIOR.md)。涉及接口字段、缓存、推送或 UI 行为时，不允许只改代码不改文档。
+
+已接入的考试 / 成绩功能位于 `TongjiKit/Sources/TongjiKit/ExamScore/`：
+- 考试安排同时服务于校园服务入口和日程页，本地缓存成功后应能在 `CoursePage` 的"本周考试"中展示。
+- 成绩课程类别以一系统前端展示为准：优先解析 `courseLabName` 中的括号编号；括号值可能是前端红圈序号，也可能是后端 `queryCourseTag.id`（例如大学美育在原始成绩包里是 `[125]`，网页显示为红圈 `10`），两者都要映射到 `shortName`；不要把 `courseNature` 里的 `SJ` 等内部代码直接展示给用户。
 
 ## 6. 上游代码引用规则
 
@@ -98,3 +103,5 @@ App (Jinitaimei target)  ──►  TongjiUI  ──►  TongjiKit
   - App 内允许用户填写接收通知的邮箱地址；服务端用该地址发送教务通知和卓越星提醒邮件。
   - 邮件服务端仍需保存用户通知偏好、邮箱地址、检测基线和必要的一系统凭证；所有凭证必须服务端加密保存，且日志中不得输出。
 - 如果后续新建后端仓库，建议仓库只保存服务端源码和 `.env.example`，真实 `.env` 仍留在服务器；宝塔自动同步脚本只能拉取源码，不得覆盖服务器本地密钥文件。
+
+通知事件、校园卡阈值、卓越星去重和邮件推送的用户可见规则统一记录在 [docs/FEATURE-BEHAVIOR.md](docs/FEATURE-BEHAVIOR.md)。协议字段、接口顺序和鉴权边界统一记录在 [docs/PROTOCOLS.md](docs/PROTOCOLS.md)。修改相关代码时必须保持三者一致。

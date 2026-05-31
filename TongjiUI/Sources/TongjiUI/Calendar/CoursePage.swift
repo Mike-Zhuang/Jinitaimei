@@ -15,13 +15,16 @@ public struct CoursePage: View {
     @Environment(\.modelContext) private var modelContext
     @ObservedObject private var campusModel = CampusModel.shared
     @StateObject private var store: CourseStore
+    @StateObject private var examStore: ExamScheduleStore
     @State private var selectedWeek: Int = 1
     @State private var showError = false
     @State private var showExportSheet = false
     @State private var showCalendarPermissionAlert = false
+    @State private var selectedExam: ExamScheduleItem?
 
     public init(modelContext: ModelContext) {
         _store = StateObject(wrappedValue: CourseStore(modelContext: modelContext))
+        _examStore = StateObject(wrappedValue: ExamScheduleStore(modelContext: modelContext))
     }
 
     public var body: some View {
@@ -30,7 +33,7 @@ public struct CoursePage: View {
                 if campusModel.isRefreshingAuth || campusModel.requiresInteractiveLogin {
                     AuthStateBanner()
                 }
-                if store.schedules.isEmpty && !store.isLoading {
+                if store.schedules.isEmpty && examStore.scheduledExams.isEmpty && !store.isLoading && !examStore.isLoading {
                     emptyState
                 } else {
                     Section {
@@ -53,6 +56,19 @@ public struct CoursePage: View {
                         )
                         .listRowInsets(EdgeInsets())
                     }
+
+                    if !examsForSelectedWeek.isEmpty {
+                        Section("本周考试") {
+                            ForEach(examsForSelectedWeek) { exam in
+                                Button {
+                                    selectedExam = exam
+                                } label: {
+                                    CoursePageExamRow(exam: exam)
+                                }
+                                .tint(.primary)
+                            }
+                        }
+                    }
                 }
             }
             .listStyle(.inset)
@@ -64,12 +80,13 @@ public struct CoursePage: View {
                         Button {
                             Task {
                                 await store.sync()
+                                await examStore.sync()
                                 computeCurrentWeek()
                             }
                         } label: {
-                            Label("刷新课表", systemImage: "arrow.clockwise")
+                            Label("刷新课表与考试", systemImage: "arrow.clockwise")
                         }
-                        .disabled(store.isLoading || !campusModel.loggedIn)
+                        .disabled(store.isLoading || examStore.isLoading || !campusModel.loggedIn)
 
                         Button {
                             Task { await requestCalendarAccess() }
@@ -78,7 +95,7 @@ public struct CoursePage: View {
                         }
                         .disabled(store.schedules.isEmpty || semesterBeginDate() == nil)
                     } label: {
-                        if store.isLoading {
+                        if store.isLoading || examStore.isLoading {
                             ProgressView()
                         } else {
                             Image(systemName: "ellipsis.circle")
@@ -94,12 +111,18 @@ public struct CoursePage: View {
                     )
                 }
             }
+            .sheet(item: $selectedExam) { exam in
+                CoursePageExamDetailSheet(exam: exam)
+                    .presentationDetents([.medium, .large])
+            }
             .refreshable {
                 guard campusModel.loggedIn else {
                     store.clearLocalData()
+                    examStore.clearLocalData()
                     return
                 }
                 await store.sync()
+                await examStore.sync()
                 computeCurrentWeek()
             }
             .alert("加载失败", isPresented: $showError) {
@@ -128,6 +151,9 @@ public struct CoursePage: View {
                 if store.schedules.isEmpty {
                     await store.sync()
                 }
+                if examStore.exams.isEmpty {
+                    await examStore.sync()
+                }
                 computeCurrentWeek()
             }
             .onChange(of: campusModel.loggedIn) { _, isLogged in
@@ -138,10 +164,14 @@ public struct CoursePage: View {
                         if store.schedules.isEmpty {
                             await store.sync()
                         }
+                        if examStore.exams.isEmpty {
+                            await examStore.sync()
+                        }
                         computeCurrentWeek()
                     }
                 } else {
                     store.clearLocalData()
+                    examStore.clearLocalData()
                     selectedWeek = 1
                 }
             }
@@ -240,6 +270,17 @@ public struct CoursePage: View {
         guard let beginDate = semesterBeginDate() else { return nil }
         let calendar = Calendar(identifier: .gregorian)
         return calendar.date(byAdding: .day, value: (week - 1) * 7, to: beginDate)
+    }
+
+    private var examsForSelectedWeek: [ExamScheduleItem] {
+        guard let weekStart = weekStartDate(for: selectedWeek),
+              let weekEnd = Calendar(identifier: .gregorian).date(byAdding: .day, value: 7, to: weekStart) else {
+            return []
+        }
+        return examStore.scheduledExams.filter { exam in
+            guard let startDate = exam.startDate else { return false }
+            return startDate >= weekStart && startDate < weekEnd
+        }
     }
 
     private func clampSelectedWeek() {

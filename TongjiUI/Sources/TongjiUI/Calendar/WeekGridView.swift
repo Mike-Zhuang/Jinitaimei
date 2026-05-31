@@ -300,3 +300,71 @@ struct CourseDetailSheet: View {
         ["一", "二", "三", "四", "五", "六", "日"][max(0, min(6, day - 1))]
     }
 }
+
+struct CoursePageExamRow: View {
+    let exam: ExamScheduleItem
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "book.closed.fill")
+                .foregroundStyle(.indigo)
+                .frame(width: 24)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(exam.courseName)
+                    .font(.headline)
+                Text("\(exam.displayDate)  \(exam.displayTime)")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 12)
+
+            Text(exam.displayLocation)
+                .font(.footnote)
+                .fontWeight(.semibold)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+struct CoursePageExamDetailSheet: View {
+    let exam: ExamScheduleItem
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(exam.courseName)
+                            .font(.title3)
+                            .bold()
+                        if !exam.newCourseCode.isEmpty {
+                            Text(exam.newCourseCode)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Section("考试信息") {
+                    LabeledContent("日期", value: exam.displayDate)
+                    LabeledContent("时间", value: exam.displayTime)
+                    LabeledContent("地点", value: exam.displayLocation)
+                    if !exam.newTeachingClassCode.isEmpty {
+                        LabeledContent("教学班", value: exam.newTeachingClassCode)
+                    }
+                }
+
+                if !exam.remark.isEmpty {
+                    Section("备注") {
+                        Text(exam.remark)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("考试详情")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+}

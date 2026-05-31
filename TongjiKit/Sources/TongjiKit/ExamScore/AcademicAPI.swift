@@ -145,9 +145,12 @@ public final class AcademicAPI {
             throw AuthError.loginFlowFailed(payload.msg.isEmpty ? "课程标签响应异常" : payload.msg)
         }
         var result: [String: String] = [:]
-        for tag in payload.data ?? [] {
+        for (index, tag) in (payload.data ?? []).enumerated() {
             let name = tag.shortName?.nilIfEmpty ?? tag.nameCN?.nilIfEmpty
             if let name {
+                // courseLabName 里括号值有两种形态：有的直接是前端红圈序号，有的是后端 tag.id。
+                // 例如"科学探索与生命关怀[2]"按序号映射，"人文经典与审美素养[125]"按 tag.id 映射。
+                result[String(index + 1)] = name
                 result[String(tag.id)] = name
             }
         }
@@ -183,12 +186,9 @@ public final class AcademicAPI {
                     calName: term.calName ?? "",
                     averagePoint: term.averagePoint ?? "",
                     courses: (term.creditInfo ?? []).map { course in
-                        let label = course.courseLabel.flatMap { tags[$0] }
                         let publicCourseName = course.publicCoursesName ?? ""
-                        let category = Self.cleanCourseCategory(course.courseLabName)
-                            ?? (course.publicCoursesType == "bx" ? nil : label?.nilIfEmpty)
+                        let category = Self.courseCategory(from: course.courseLabName, tags: tags)
                             ?? (publicCourseName == "必修" ? nil : publicCourseName.nilIfEmpty)
-                            ?? course.courseNature?.nilIfEmpty
                             ?? ""
                         return TongjiGradeCourse(
                             sourceId: course.id ?? stableId(course.newCourseCode, course.courseCode, course.courseName),
@@ -261,11 +261,39 @@ public final class AcademicAPI {
         return String(format: "%.1f", value)
     }
 
-    private static func cleanCourseCategory(_ value: String?) -> String? {
-        guard var value = value?.nilIfEmpty else { return nil }
-        value = value.replacingOccurrences(of: "[", with: "（")
-        value = value.replacingOccurrences(of: "]", with: "）")
-        return value
+    private static func courseCategory(from value: String?, tags: [String: String]) -> String? {
+        guard let value = value?.nilIfEmpty else { return nil }
+        if let code = bracketCode(in: value), let mapped = tags[code] {
+            let label = removingBracketCode(from: value)
+            if let label = label.nilIfEmpty {
+                return "\(label) · \(mapped)"
+            }
+            return mapped
+        }
+        let cleaned = value
+            .replacingOccurrences(of: "[", with: "（")
+            .replacingOccurrences(of: "]", with: "）")
+        return cleaned.nilIfEmpty
+    }
+
+    private static func bracketCode(in value: String) -> String? {
+        let pattern = #"(?:\[|（|\()(\d+)(?:\]|）|\))"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)),
+              let range = Range(match.range(at: 1), in: value) else {
+            return nil
+        }
+        return String(value[range])
+    }
+
+    private static func removingBracketCode(from value: String) -> String {
+        let pattern = #"\s*(?:\[|（|\()\d+(?:\]|）|\))\s*"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return value
+        }
+        let range = NSRange(value.startIndex..., in: value)
+        let cleaned = regex.stringByReplacingMatches(in: value, range: range, withTemplate: "")
+        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func stableId(_ values: String?...) -> Int {

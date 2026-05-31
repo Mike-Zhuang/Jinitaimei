@@ -8,10 +8,12 @@
 
 | Tab | 功能 | 数据来源 | 状态 |
 |-----|------|---------|------|
-| 日程 | 周课表查看（按周切换、点击节次看详情、导出到系统日历） | 一系统 `1.tongji.edu.cn` `findStudentTimetab` + `currentTermCalendar` | v0.1 可用 |
+| 日程 | 周课表查看（按周切换、点击节次看详情、显示本周考试、导出课表到系统日历） | 一系统 `1.tongji.edu.cn` `findStudentTimetab` + `currentTermCalendar` + 考试查询 | v0.1 可用 |
 | 校园 | 卓越星活动列表、筛选排序、个人星值摘要 | STAR 平台 `star.tongji.edu.cn` | v0.1 可用 |
-| 校园 | 教学管理信息系统通知公告（列表、详情、置顶服务卡片） | 一系统 `1.tongji.edu.cn` `commonMsgPublish` | v0.1 可用 |
-| 校园 | 校园卡余额、最近余额变化趋势、低余额提醒 | 同济校园卡 `pay-yikatong.tongji.edu.cn` | v0.1 可用 |
+| 校园 | 教学管理信息系统通知公告（列表、详情、附件按需下载与预览、置顶服务卡片） | 一系统 `1.tongji.edu.cn` `commonMsgPublish` + `obsfile` | v0.1 可用 |
+| 校园 | 校园卡余额、消费记录、最近 7 天每日消费曲线、低余额提醒 | 同济校园卡 `pay-yikatong.tongji.edu.cn` + `all4u.tongji.edu.cn` | v0.1 可用 |
+| 校园 | 考试安排（考试/考察列表、置顶卡片、导出到系统日历、同步到 App 日程） | 一系统 `1.tongji.edu.cn` `undergraduateExamQuery` | v0.1 可用 |
+| 校园 | 课程成绩（总绩点、学分、不及格统计、分学期成绩、课程详情） | 一系统 `1.tongji.edu.cn` `scoreGrades` + `queryCourseTag` | v0.1 可用 |
 | 设置 | 校园账户登录、账户信息、退出登录、自动登录开关、邮件推送与低余额阈值 | 同济统一身份认证 + 一系统 session 用户信息 | v0.1 可用 |
 
 登录方式：**仅同济统一身份认证（iam/ids.tongji.edu.cn）**。用户从 `设置 → 校园账户` 进入登录页，在 WebView 内完成一次 SSO 后，App 会在同一个 WebView 内于遮罩下后台抓取凭证（Cookie + sessionid + AES 加密 studentCode）。STAR 平台的活动列表为公开接口，无需额外登录；个人星值用独立的 Bearer Token，由 `StarAuthCoordinator` 单独维护。
@@ -34,6 +36,31 @@ Cookie 处理：所有响应里的 `Set-Cookie` 会被合并回 `CookieJar.share
 
 日程页的校历接口只用于缓存"本学期第几周对应哪一段日期"：`calendarId`、`beginDay`、`endDay`、`weekNum` 等。当前显示第几周由本机系统日期和缓存的 `beginDay` 即时计算，同一学期内不会每次进入日程页都请求校历接口。
 
+### 考试安排与课程成绩
+
+考试安排与课程成绩拆成两个独立校园服务入口：
+
+- **考试安排**：同步当前学期考试与考察条目。本地缓存成功后，具有明确日期和起止时间的考试会同步显示在日程页对应周的"本周考试"区域，也可从考试安排页写入系统日历。考察、论文、汇报等无明确时间条目只在 App 内展示，不导出。
+- **课程成绩**：展示总平均绩点、实修学分、不及格统计、分学期课程列表和课程详情。列表保持克制，不直接复刻网页大表格。
+
+一系统课程类别存在两套编号：网页底部红圈序号与后端 `queryCourseTag.id`。App 会动态拉取 `queryCourseTag`，同时按两种编号映射到 `shortName`。例如：
+
+| 原始字段 | App 展示 |
+|---------|----------|
+| `科学探索与生命关怀[2]` | `科学探索与生命关怀 · 精品类（核心）` |
+| `人文经典与审美素养[125]` | `人文经典与审美素养 · 大学美育` |
+| `人文经典与审美素养` | `人文经典与审美素养` |
+
+`courseNature` 中的 `SJ` 等值属于一系统内部代码，不作为用户可见课程类别展示。
+
+### 校园卡与教务附件
+
+- 校园卡续期优先走同济校园卡登录中转页；必要时使用 `all4u` 入口获取可用凭证。余额接口失效时会清理校园卡专属旧凭证并重新续期，不影响一系统登录态。
+- 校园卡详情页展示余额、更新时间、最近 7 天每日消费曲线和精简后的消费记录。卡号、账户号、机位号以及重复泛化文案不在列表中堆叠展示。
+- 教务通知附件只在用户点击时按需下载。下载请求复用一系统 Cookie 与 `X-Token`，凭证失效时自动续期并重试一次；下载后的文件仅写入临时目录，用于系统预览或分享。
+
+更多协议与行为约定见 [docs/PROTOCOLS.md](docs/PROTOCOLS.md) 和 [docs/FEATURE-BEHAVIOR.md](docs/FEATURE-BEHAVIOR.md)。
+
 ## 暂未实现 / 不计划在 v0.1 实现
 
 > 已删除 / 不创建（参考 DanXi 但本项目不实现）：树洞社区、课评、AI 助手、教师日程、图书馆人数、食堂排队、巴士、电费、运动数据、钱包、宿舍预约…… 后续按需独立 module 增量加入。
@@ -52,9 +79,12 @@ Jinitaimei/
 │   └── Sources/TongjiKit/
 │       ├── Authentication/    # SSO 登录 / 静默续期 / 密码回填 / AuthRecoveryManager / CookieJar / Keychain / studentCode AES-CBC / StarAuthCoordinator
 │       ├── Course/            # 一系统课表 API + 解析 + SwiftData 仓储
+│       ├── ExamScore/         # 一系统考试安排 / 课程成绩 API + SwiftData 缓存 + 考试日历导出
 │       ├── Activity/          # STAR 活动 API + 解析 + SwiftData 仓储
 │       ├── TeachingNotice/    # 一系统通知公告 API + 模型
 │       ├── Wallet/            # 校园卡余额与消费记录 API / 登录续期 / SwiftData 快照
+│       ├── Notification/      # 本地通知、偏好与变化检测
+│       ├── Push/              # 邮件推送订阅 API
 │       ├── Profile/           # 一系统 session 用户信息
 │       ├── CampusModel.swift  # 全局登录态
 │       └── Util/              # JSON 等工具
@@ -62,8 +92,8 @@ Jinitaimei/
     └── Sources/TongjiUI/
         ├── Navigation/        # RootView（TabBar + 隐藏续期 WebView + scenePhase 节流检查） / CampusHome
         ├── Components/        # AuthStateBanner（renewing / requiresInteractiveLogin 非阻塞 banner）
-        ├── Pages/             # LoginPage / AutoLoginSettingsView / ActivityListPage / TeachingNoticePage / CampusCardPage / SettingsPage
-        └── Calendar/          # CoursePage（周课表）
+        ├── Pages/             # LoginPage / AutoLoginSettingsView / ActivityListPage / TeachingNoticePage / CampusCardPage / ExamSchedulePage / GradeReportPage / SettingsPage
+        └── Calendar/          # CoursePage（周课表 + 本周考试）
 ```
 
 模块依赖方向（单向）：
@@ -153,6 +183,8 @@ xcodebuild \
 - **修改 project.yml 后 Xcode 编译不到新文件** —— 重新跑 `xcodegen generate`。
 - **修改了 SPM Package（TongjiKit / TongjiUI）后 Xcode 看似没更新** ——
   `File → Packages → Reset Package Caches`，或直接关闭 Xcode 后 `rm -rf Jinitaimei.xcodeproj/project.xcworkspace/xcshareddata/swiftpm` 再 `xcodegen generate`。
+- **课程成绩类别显示旧值或括号编号** ——
+  进入 `校园 → 课程成绩` 下拉刷新。成绩缓存会在同步成功后重写；类别解析会同时兼容网页红圈序号与后端 `queryCourseTag.id`。
 - **真机首次安装提示"不受信任的开发者"** —— 见上面"真机数据线调试"第 5 步。
 
 ## 上游参考链接
