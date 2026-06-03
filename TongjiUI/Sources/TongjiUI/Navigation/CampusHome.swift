@@ -108,6 +108,7 @@ public struct CampusHome: View {
         await YikatongStore(modelContext: modelContext).sync(force: true)
         await ExamScheduleStore(modelContext: modelContext).sync()
         await GradeStore(modelContext: modelContext).sync()
+        await LibrarySpaceStore(modelContext: modelContext).sync(force: true)
 
         refreshToken = UUID()
     }
@@ -119,6 +120,7 @@ private enum CampusService: String, CaseIterable, Codable, Identifiable {
     case campusCard
     case examSchedule
     case gradeReport
+    case librarySpace
 
     var id: String { rawValue }
 
@@ -135,6 +137,8 @@ private enum CampusService: String, CaseIterable, Codable, Identifiable {
             Label("考试安排", systemImage: "book.closed")
         case .gradeReport:
             Label("课程成绩", systemImage: "graduationcap.circle")
+        case .librarySpace:
+            Label("图书馆座位", systemImage: "chair.lounge")
         }
     }
 
@@ -151,6 +155,8 @@ private enum CampusService: String, CaseIterable, Codable, Identifiable {
             ExamSchedulePinnedCard(refreshToken: refreshToken)
         case .gradeReport:
             GradeReportPinnedCard(refreshToken: refreshToken)
+        case .librarySpace:
+            LibrarySpacePinnedCard(refreshToken: refreshToken)
         }
     }
 
@@ -167,6 +173,8 @@ private enum CampusService: String, CaseIterable, Codable, Identifiable {
             ExamSchedulePageContainer()
         case .gradeReport:
             GradeReportPageContainer()
+        case .librarySpace:
+            LibrarySpacePageContainer()
         }
     }
 }
@@ -186,7 +194,7 @@ private final class CampusHomeModel: ObservableObject {
     init() {
         let defaults = UserDefaults.standard
         self.pinnedServices = Self.load(key: pinnedKey, from: defaults) ?? []
-        self.unpinnedServices = Self.load(key: unpinnedKey, from: defaults) ?? [.starActivity, .teachingNotice, .campusCard, .examSchedule, .gradeReport]
+        self.unpinnedServices = Self.load(key: unpinnedKey, from: defaults) ?? [.starActivity, .teachingNotice, .campusCard, .examSchedule, .gradeReport, .librarySpace]
         normalize()
     }
 
@@ -708,6 +716,85 @@ private struct GradeReportPinnedCard: View {
     }
 }
 
+private struct LibrarySpacePinnedCard: View {
+    @Environment(\.modelContext) private var modelContext
+    @ObservedObject private var campusModel = CampusModel.shared
+    let refreshToken: UUID
+    @StateObject private var storeHolder = LibrarySpaceStoreHolder()
+
+    var body: some View {
+        PinnedServiceCardLayout(title: "图书馆座位", systemImage: "chair.lounge.fill", color: .teal) {
+            if !campusModel.loggedIn {
+                Text("登录后查看图书馆座位")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let store = storeHolder.store, !store.targetLibraries.isEmpty {
+                VStack(alignment: .leading, spacing: 5) {
+                    ForEach(store.targetLibraries.prefix(2)) { library in
+                        HStack {
+                            Text(library.shortDisplayName)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text("\(library.freeSeats)/\(library.totalSeats) 可用")
+                                .font(.caption)
+                                .bold()
+                        }
+                    }
+                    Text("座位占用口径")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let store = storeHolder.store, store.isLoading {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("正在加载图书馆座位")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let store = storeHolder.store, let error = store.lastError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Text("下拉刷新后同步座位状态")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .task {
+            await prepareStoreIfNeeded()
+            guard let store = storeHolder.store, campusModel.loggedIn, store.libraries.isEmpty else { return }
+            await store.sync()
+        }
+        .onChange(of: refreshToken) { _, _ in
+            guard campusModel.loggedIn else { return }
+            Task {
+                await prepareStoreIfNeeded()
+                await storeHolder.store?.sync(force: true)
+            }
+        }
+        .onChange(of: campusModel.loggedIn) { _, loggedIn in
+            guard let store = storeHolder.store else { return }
+            if !loggedIn {
+                store.clearLocalData()
+            }
+        }
+    }
+
+    private func prepareStoreIfNeeded() async {
+        if storeHolder.store == nil {
+            storeHolder.store = LibrarySpaceStore(modelContext: modelContext)
+        }
+    }
+}
+
 private struct PinnedServiceCardLayout<Content: View>: View {
     let title: String
     let systemImage: String
@@ -791,6 +878,13 @@ private struct GradeReportPageContainer: View {
     }
 }
 
+private struct LibrarySpacePageContainer: View {
+    @Environment(\.modelContext) private var modelContext
+    var body: some View {
+        LibrarySpacePage(modelContext: modelContext)
+    }
+}
+
 @MainActor
 private final class CampusCardStoreHolder: ObservableObject {
     @Published var store: YikatongStore?
@@ -804,4 +898,18 @@ private final class ExamScheduleStoreHolder: ObservableObject {
 @MainActor
 private final class GradeStoreHolder: ObservableObject {
     @Published var store: GradeStore?
+}
+
+@MainActor
+private final class LibrarySpaceStoreHolder: ObservableObject {
+    @Published var store: LibrarySpaceStore?
+}
+
+private extension LibrarySpaceLibrary {
+    var shortDisplayName: String {
+        name
+            .replacingOccurrences(of: "校区图书馆", with: "")
+            .replacingOccurrences(of: "图书馆", with: "")
+            .replacingOccurrences(of: "校区", with: "")
+    }
 }

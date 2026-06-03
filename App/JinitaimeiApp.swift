@@ -19,7 +19,10 @@ struct JinitaimeiApp: App {
                     CampusCardTransaction.self,
                     ExamScheduleItem.self,
                     GradeSummarySnapshot.self,
-                    GradeCourseRecord.self
+                    GradeCourseRecord.self,
+                    LibrarySpaceOverviewSnapshot.self,
+                    LibrarySpaceAreaSnapshot.self,
+                    LibrarySpaceRoomSnapshot.self
             )
         } catch {
             fatalError("SwiftData 初始化失败: \(error)")

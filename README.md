@@ -14,6 +14,7 @@
 | 校园 | 校园卡余额、消费记录、最近 7 天每日消费曲线、低余额提醒 | 同济校园卡 `pay-yikatong.tongji.edu.cn` + `all4u.tongji.edu.cn` | v0.1 可用 |
 | 校园 | 考试安排（考试/考察列表、置顶卡片、导出到系统日历、同步到 App 日程） | 一系统 `1.tongji.edu.cn` `undergraduateExamQuery` | v0.1 可用 |
 | 校园 | 课程成绩（总绩点、学分、不及格统计、分学期成绩、课程详情） | 一系统 `1.tongji.edu.cn` `scoreGrades` + `queryCourseTag` | v0.1 可用 |
+| 校园 | 图书馆座位（四个重点馆座位占用概览、区域座位图、研习室三天空闲时段、单人单座本地标签） | 图书馆空间系统 `space.tongji.edu.cn` | v0.1 可用 |
 | 设置 | 校园账户登录、账户信息、退出登录、自动登录开关、邮件推送与低余额阈值 | 同济统一身份认证 + 一系统 session 用户信息 | v0.1 可用 |
 
 登录方式：**仅同济统一身份认证（iam/ids.tongji.edu.cn）**。用户从 `设置 → 校园账户` 进入登录页，在 WebView 内完成一次 SSO 后，App 会在同一个 WebView 内于遮罩下后台抓取凭证（Cookie + sessionid + AES 加密 studentCode）。STAR 平台的活动列表为公开接口，无需额外登录；个人星值用独立的 Bearer Token，由 `StarAuthCoordinator` 单独维护。
@@ -59,11 +60,31 @@ Cookie 处理：所有响应里的 `Set-Cookie` 会被合并回 `CookieJar.share
 - 校园卡详情页展示余额、更新时间、最近 7 天每日消费曲线和精简后的消费记录。卡号、账户号、机位号以及重复泛化文案不在列表中堆叠展示。
 - 教务通知附件只在用户点击时按需下载。下载请求复用一系统 Cookie 与 `X-Token`，凭证失效时自动续期并重试一次；下载后的文件仅写入临时目录，用于系统预览或分享。
 
+### 图书馆座位
+
+图书馆座位功能只读展示，不提交预约、取消预约或签到。首版重点展示四个图书馆：
+
+- 四平路校区图书馆
+- 德文图书馆
+- 东区图书馆
+- 嘉定校区图书馆
+
+当前抓包未发现真实门禁入馆人数接口，因此页面明确使用“座位占用口径”：`已占用座位 / 总座位` 与 `可用座位 / 总座位`。若后续拿到真实入馆人数接口，再在同一页面升级为双口径展示。
+
+座位详情按区域懒加载学校返回的坐标与状态，并绘制为平面图，不展示几千条座位列表。筛选支持学校标签（靠窗、带电源、安静等）和本地 `单人单座` 标签。本地规则来自人工确认：
+
+- 四平路二楼：`113-128`、`191-214`
+- 四平路 6 / 8 / 10 楼南北：`001-007`、`032-040`、`073-081`
+- 东区二楼：`57-69`
+- 东区三楼：`65-79`
+
+研习室展示今天、明天、后天三天的空闲时段时间轴，并显示人数限制；东区图书馆若接口暂无研习室数据，会显示空状态。
+
 更多协议与行为约定见 [docs/PROTOCOLS.md](docs/PROTOCOLS.md) 和 [docs/FEATURE-BEHAVIOR.md](docs/FEATURE-BEHAVIOR.md)。
 
 ## 暂未实现 / 不计划在 v0.1 实现
 
-> 已删除 / 不创建（参考 DanXi 但本项目不实现）：树洞社区、课评、AI 助手、教师日程、图书馆人数、食堂排队、巴士、电费、运动数据、钱包、宿舍预约…… 后续按需独立 module 增量加入。
+> 已删除 / 不创建（参考 DanXi 但本项目不实现）：树洞社区、课评、AI 助手、教师日程、食堂排队、巴士、电费、运动数据、钱包、宿舍预约…… 后续按需独立 module 增量加入。
 
 ## 项目结构
 
@@ -83,6 +104,7 @@ Jinitaimei/
 │       ├── Activity/          # STAR 活动 API + 解析 + SwiftData 仓储
 │       ├── TeachingNotice/    # 一系统通知公告 API + 模型
 │       ├── Wallet/            # 校园卡余额与消费记录 API / 登录续期 / SwiftData 快照
+│       ├── LibrarySpace/      # 图书馆空间系统 API / JWT 续期 / 座位与研习室模型 / SwiftData 概览缓存
 │       ├── Notification/      # 本地通知、偏好与变化检测
 │       ├── Push/              # 邮件推送订阅 API
 │       ├── Profile/           # 一系统 session 用户信息
@@ -92,7 +114,7 @@ Jinitaimei/
     └── Sources/TongjiUI/
         ├── Navigation/        # RootView（TabBar + 隐藏续期 WebView + scenePhase 节流检查） / CampusHome
         ├── Components/        # AuthStateBanner（renewing / requiresInteractiveLogin 非阻塞 banner）
-        ├── Pages/             # LoginPage / AutoLoginSettingsView / ActivityListPage / TeachingNoticePage / CampusCardPage / ExamSchedulePage / GradeReportPage / SettingsPage
+        ├── Pages/             # LoginPage / AutoLoginSettingsView / ActivityListPage / TeachingNoticePage / CampusCardPage / ExamSchedulePage / GradeReportPage / LibrarySpacePage / SettingsPage
         └── Calendar/          # CoursePage（周课表 + 本周考试）
 ```
 

@@ -34,3 +34,25 @@ public func withStarAuthRetry<T: Sendable>(
         return try await body()
     }
 }
+
+/// 图书馆空间预约系统专用 401/403 重试 wrapper。
+/// 该系统使用独立 JWT，和一系统 / STAR / 校园卡互不污染。
+public func withLibrarySpaceAuthRetry<T: Sendable>(
+    _ body: @Sendable () async throws -> T
+) async throws -> T {
+    do {
+        return try await body()
+    } catch let error as AuthError where error.isExpired || error.isMissingLibraryToken {
+        await LibrarySpaceAuthCoordinator.shared.clearToken()
+        let renewed = await LibrarySpaceAuthCoordinator.shared.renewIfPossible()
+        guard renewed else { throw error }
+        return try await body()
+    }
+}
+
+private extension AuthError {
+    var isMissingLibraryToken: Bool {
+        if case .notLoggedIn = self { return true }
+        return false
+    }
+}

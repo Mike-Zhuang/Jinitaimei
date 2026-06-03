@@ -253,5 +253,8 @@ public final class CredentialStore: @unchecked Sendable {
         // 校园卡 / 一卡通（pay-yikatong.tongji.edu.cn）相关
         public static let yikatongCookies = "yikatong_cookies"
         public static let yikatongBearerToken = "yikatong_bearer_token"
+
+        // 图书馆空间预约系统（space.tongji.edu.cn）相关
+        public static let librarySpaceBearerToken = "library_space_bearer_token"
     }
 }

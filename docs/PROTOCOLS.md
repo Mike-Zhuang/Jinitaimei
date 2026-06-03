@@ -143,3 +143,132 @@ STAR token 与一系统登录态解耦：
 - 一系统恢复成功后，可独立尝试 STAR 续期
 - 遇到验证码或 MFA 时不绕过，降级到用户交互
 
+## 7. 图书馆空间系统
+
+图书馆座位与研习室数据来自：
+
+```text
+https://space.tongji.edu.cn
+```
+
+首版只读展示，不提交预约、取消预约或签到。
+
+### 7.1 鉴权
+
+图书馆系统使用独立 IAM 应用：
+
+```text
+client_id / entityId: SYS20230204
+redirect_uri: https://space.tongji.edu.cn/api/Oauth3/login
+```
+
+登录链路：
+
+1. IAM OAuth 回跳到 `/api/Oauth3/login?code=...`
+2. 图书馆系统重定向到 `/h5/#/cas?cas=...`
+3. App 调用 `POST /api/cas/user`，请求体：
+
+```json
+{"cas":"<redacted>"}
+```
+
+4. 响应中的 `member.token` 是后续业务请求使用的 JWT，写入 Keychain `library_space_bearer_token`
+
+该 token 与一系统、STAR、校园卡凭证互相隔离。业务请求遇到 `401 / 403` 时抛 `AuthError.expired`，通过 `withLibrarySpaceAuthRetry` 触发图书馆专属 single-flight 续期并重试一次。
+
+日志只允许输出 token 是否存在、长度和来源，不得输出 `cas`、JWT、Cookie、手机号、邮箱或完整学号。
+
+### 7.2 请求约定
+
+图书馆系统的 JWT 不放在 HTTP `Authorization` Header，而是放在 JSON 请求体里：
+
+```json
+{
+  "authorization": "bearer<token>"
+}
+```
+
+注意抓包中 `bearer` 与 token 之间没有空格。新增接口时必须保持这个格式，除非后续抓包证明学校改了协议。
+
+### 7.3 座位概览与座位图
+
+座位概览：
+
+```text
+POST /reserve/index/quickSelect
+```
+
+座位模式请求体核心字段：
+
+```json
+{
+  "id": "1",
+  "date": "yyyy-MM-dd",
+  "categoryIds": ["1"],
+  "members": 0
+}
+```
+
+返回中的 `premises` 是图书馆概览，`storey` 是楼层，`area` 是具体座位区。当前已验证重点图书馆：
+
+- 嘉定校区图书馆
+- 四平路校区图书馆
+- 德文图书馆
+- 东区图书馆
+
+`total_num` 和 `free_num` 是座位总数与空闲数。当前抓包未发现真实门禁入馆人数接口，因此 UI 必须称为“座位占用口径”，不得写成“入馆人数”。
+
+区域座位图按需请求：
+
+```text
+POST /api/Seat/date
+POST /api/seat/label
+POST /api/seat/map
+POST /api/Seat/seat
+```
+
+`/api/Seat/seat` 返回座位坐标、尺寸、状态、标签等字段。UI 使用坐标绘制平面图，不展示几千条座位列表。
+
+### 7.4 本地标签
+
+学校标签来自：
+
+```text
+POST /api/seat/label
+```
+
+本地额外维护 `单人单座` 标签，首版规则：
+
+- 四平路二楼：`113-128`、`191-214`
+- 四平路 6 / 8 / 10 楼南北：`001-007`、`032-040`、`073-081`
+- 东区二楼：`57-69`
+- 东区三楼：`65-79`
+
+匹配依据为“图书馆名 + 楼层 / 区域名 + 座位号”。不确定区域不得误标。
+
+### 7.5 研习室
+
+研习室概览同样使用：
+
+```text
+POST /reserve/index/quickSelect
+```
+
+研习室模式请求体核心字段：
+
+```json
+{
+  "id": "2",
+  "date": "yyyy-MM-dd",
+  "members": 0
+}
+```
+
+单个研习室详情与空闲段：
+
+```text
+POST /api/Seminar/detail
+POST /api/Seminar/v1seminar
+```
+
+`/api/Seminar/v1seminar` 返回多天可约信息。App 首版只展示今天、明天、后天三天，并把 `beginNum` / `endNum` 按分钟映射到 08:00-22:00 时间轴。

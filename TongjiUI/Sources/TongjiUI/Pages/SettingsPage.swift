@@ -104,7 +104,7 @@ private struct NotificationSettingsView: View {
                 Toggle("新教务通知", isOn: Binding(
                     get: { preferenceStore.preferences.teachingNoticeEnabled },
                     set: { value in
-                        preferenceStore.update { $0.teachingNoticeEnabled = value }
+                        updatePreferencesAndSyncMailIfNeeded { $0.teachingNoticeEnabled = value }
                     }
                 ))
             } header: {
@@ -115,7 +115,7 @@ private struct NotificationSettingsView: View {
                 Toggle("低余额提醒", isOn: Binding(
                     get: { preferenceStore.preferences.campusCardLowBalanceEnabled },
                     set: { value in
-                        preferenceStore.update { $0.campusCardLowBalanceEnabled = value }
+                        updatePreferencesAndSyncMailIfNeeded { $0.campusCardLowBalanceEnabled = value }
                     }
                 ))
 
@@ -150,14 +150,14 @@ private struct NotificationSettingsView: View {
                 Toggle("新活动但未开始报名", isOn: Binding(
                     get: { preferenceStore.preferences.starNewActivityEnabled },
                     set: { value in
-                        preferenceStore.update { $0.starNewActivityEnabled = value }
+                        updatePreferencesAndSyncMailIfNeeded { $0.starNewActivityEnabled = value }
                     }
                 ))
 
                 Toggle("关注活动开始报名", isOn: Binding(
                     get: { preferenceStore.preferences.starRegistrationEnabled },
                     set: { value in
-                        preferenceStore.update { $0.starRegistrationEnabled = value }
+                        updatePreferencesAndSyncMailIfNeeded { $0.starRegistrationEnabled = value }
                     }
                 ))
             } header: {
@@ -240,9 +240,19 @@ private struct NotificationSettingsView: View {
         }
         .navigationTitle("通知")
         .navigationBarTitleDisplayMode(.inline)
+        .onDisappear {
+            saveEmailRecipient()
+            if preferenceStore.preferences.mailPushEnabled {
+                Task { await syncMailPushPreferences() }
+            }
+        }
         .task {
             emailRecipient = preferenceStore.preferences.emailRecipient
             await notificationManager.refreshAuthorizationStatus()
+            if notificationManager.authorizationStatus == .denied {
+                preferenceStore.update { $0.localNotificationsEnabled = false }
+                await disableMailPushBecauseNotificationsAreOff()
+            }
         }
         .sheet(isPresented: $showCredentialSheet) {
             MailPushCredentialSheet(
@@ -269,9 +279,13 @@ private struct NotificationSettingsView: View {
             Task {
                 let granted = await notificationManager.requestAuthorization()
                 preferenceStore.update { $0.localNotificationsEnabled = granted }
+                if !granted {
+                    await disableMailPushBecauseNotificationsAreOff()
+                }
             }
         } else {
             preferenceStore.update { $0.localNotificationsEnabled = false }
+            Task { await disableMailPushBecauseNotificationsAreOff() }
         }
     }
 
@@ -280,14 +294,16 @@ private struct NotificationSettingsView: View {
     }
 
     private func setMailPushEnabled(_ value: Bool) {
-        preferenceStore.update { $0.mailPushEnabled = value }
         if value {
+            preferenceStore.update { $0.mailPushEnabled = true }
             Task { await syncMailPushPreferences() }
+        } else {
+            Task { await deleteMailPushSubscription(reason: "邮件推送已关闭，服务器订阅与凭据已删除") }
         }
     }
 
     private func toggleModule(_ code: String) {
-        preferenceStore.update { preferences in
+        updatePreferencesAndSyncMailIfNeeded { preferences in
             if preferences.selectedStarModuleCodes.contains(code) {
                 preferences.selectedStarModuleCodes.remove(code)
             } else {
@@ -298,6 +314,13 @@ private struct NotificationSettingsView: View {
 
     private func saveEmailRecipient() {
         preferenceStore.update { $0.emailRecipient = emailRecipient.trimmingCharacters(in: .whitespacesAndNewlines) }
+    }
+
+    private func updatePreferencesAndSyncMailIfNeeded(_ transform: @escaping (inout NotificationPreferences) -> Void) {
+        preferenceStore.update(transform)
+        if preferenceStore.preferences.mailPushEnabled {
+            Task { await syncMailPushPreferences() }
+        }
     }
 
     private func syncMailPushPreferences() async {
@@ -349,16 +372,29 @@ private struct NotificationSettingsView: View {
     }
 
     private func deleteMailPushSubscription() async {
+        await deleteMailPushSubscription(reason: "服务器订阅与凭据已删除")
+    }
+
+    private func disableMailPushBecauseNotificationsAreOff() async {
+        guard preferenceStore.preferences.mailPushEnabled else { return }
+        await deleteMailPushSubscription(reason: "已关闭通知，邮件推送订阅与凭据已同步删除")
+    }
+
+    private func deleteMailPushSubscription(reason: String) async {
         guard !isSyncingMailPush else { return }
         let email = emailRecipient.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !email.isEmpty else { return }
+        guard !email.isEmpty else {
+            preferenceStore.update { $0.mailPushEnabled = false }
+            mailPushStatus = reason
+            return
+        }
 
         isSyncingMailPush = true
         defer { isSyncingMailPush = false }
         do {
             try await PushSubscriptionAPI().deleteSubscription(email: email)
             preferenceStore.update { $0.mailPushEnabled = false }
-            mailPushStatus = "服务器订阅与凭据已删除"
+            mailPushStatus = reason
         } catch {
             mailPushStatus = error.localizedDescription
         }
@@ -506,6 +542,7 @@ private struct AccountSheet: View {
                             YikatongStore(modelContext: modelContext).clearLocalData()
                             ExamScheduleStore(modelContext: modelContext).clearLocalData()
                             GradeStore(modelContext: modelContext).clearLocalData()
+                            LibrarySpaceStore(modelContext: modelContext).clearLocalData()
                             campusModel.logout()
                             dismiss()
                         } label: {
