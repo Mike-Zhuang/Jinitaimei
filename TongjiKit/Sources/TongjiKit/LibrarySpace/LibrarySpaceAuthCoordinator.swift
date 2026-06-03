@@ -53,6 +53,7 @@ public final class LibrarySpaceAuthCoordinator: NSObject, ObservableObject {
         guard let body = String(data: bodyData, encoding: .utf8) else {
             throw AuthError.loginFlowFailed("图书馆请求体编码失败")
         }
+        let authorization = authorizationValue(from: bodyData) ?? ""
 
         let script = """
         const response = await fetch(path, {
@@ -61,7 +62,8 @@ public final class LibrarySpaceAuthCoordinator: NSObject, ObservableObject {
                 'Accept': 'application/json, text/plain, */*',
                 'Content-Type': 'application/json',
                 'X-Requested-With': 'XMLHttpRequest',
-                'lang': 'zh'
+                'lang': 'zh',
+                'authorization': authorization
             },
             body: body
         });
@@ -72,7 +74,8 @@ public final class LibrarySpaceAuthCoordinator: NSObject, ObservableObject {
             script,
             arguments: [
                 "path": path,
-                "body": body
+                "body": body,
+                "authorization": authorization
             ],
             in: nil,
             contentWorld: .page
@@ -86,6 +89,15 @@ public final class LibrarySpaceAuthCoordinator: NSObject, ObservableObject {
             throw AuthError.loginFlowFailed("图书馆 WebView 响应正文编码失败")
         }
         return WebFetchResult(statusCode: payload.status, data: responseData)
+    }
+
+    private func authorizationValue(from bodyData: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any],
+              let authorization = object["authorization"] as? String,
+              !authorization.isEmpty else {
+            return nil
+        }
+        return authorization
     }
 
     private func runWebRenew() async -> Bool {
@@ -126,11 +138,31 @@ public final class LibrarySpaceAuthCoordinator: NSObject, ObservableObject {
             guard savedLength > 0 else {
                 throw AuthError.loginFlowFailed("图书馆 JWT 写入后读取失败")
             }
+            await installAuthenticatedState(token: token)
             log("图书馆 JWT 已存储，长度=\(token.count)，读回长度=\(savedLength)")
             finish(true)
         } catch {
             log("图书馆 cas 换 JWT 失败：\(error.localizedDescription)")
             finish(false)
+        }
+    }
+
+    private func installAuthenticatedState(token: String) async {
+        guard let webView else { return }
+        let script = """
+        sessionStorage.setItem('token', token);
+        localStorage.setItem('lang', localStorage.getItem('lang') || 'zh');
+        """
+        do {
+            _ = try await webView.callAsyncJavaScript(
+                script,
+                arguments: ["token": token],
+                in: nil,
+                contentWorld: .page
+            )
+            log("图书馆 H5 登录态已写入 sessionStorage")
+        } catch {
+            log("图书馆 H5 登录态写入失败：\(error.localizedDescription)")
         }
     }
 

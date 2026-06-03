@@ -243,12 +243,28 @@ public final class LibrarySpaceAPI {
     }
 
     private func warmUpReserveIndex() async throws {
-        let payload: ReserveIndexResponse = try await post(
+        let invitationPayload: InvitationResponse = try await post(
+            path: "/api/member/invitations",
+            body: EmptyAuthorizedRequest()
+        )
+        guard invitationPayload.isSuccess else {
+            throw AuthError.loginFlowFailed(invitationPayload.msg.isEmpty ? "图书馆用户状态初始化异常" : invitationPayload.msg)
+        }
+
+        let seatPayload: ReserveIndexResponse = try await post(
             path: "/reserve/index/index",
             body: IdRequest(id: "1")
         )
-        guard payload.isSuccess else {
-            throw AuthError.loginFlowFailed(payload.msg.isEmpty ? "图书馆预约入口响应异常" : payload.msg)
+        guard seatPayload.isSuccess else {
+            throw AuthError.loginFlowFailed(seatPayload.msg.isEmpty ? "图书馆座位入口响应异常" : seatPayload.msg)
+        }
+
+        let roomPayload: ReserveIndexResponse = try await post(
+            path: "/reserve/index/index",
+            body: IdRequest(id: "2")
+        )
+        guard roomPayload.isSuccess else {
+            throw AuthError.loginFlowFailed(roomPayload.msg.isEmpty ? "图书馆研习室入口响应异常" : roomPayload.msg)
         }
     }
 
@@ -290,6 +306,7 @@ public final class LibrarySpaceAPI {
 
         let bodyData = try authorizedBodyData(body: body, token: token, path: path)
         request.httpBody = bodyData
+        request.setValue("bearer\(token)", forHTTPHeaderField: "authorization")
         log("POST \(path) token=true len=\(token.count)")
 
         let (data, response) = try await session.data(for: request)
@@ -474,6 +491,7 @@ private struct BaseResponse<DataType: Decodable>: Decodable {
     var isSuccess: Bool { code == 0 || code == 1 || code == 200 }
 }
 
+private typealias InvitationResponse = BaseResponse<JSONValue>
 private typealias ReserveIndexResponse = BaseResponse<JSONValue>
 private struct StatusEnvelope: Decodable {
     let code: Int?
