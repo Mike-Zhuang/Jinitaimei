@@ -55,6 +55,7 @@ public final class LibrarySpaceAuthCoordinator: NSObject, ObservableObject {
         }
         let authorization = authorizationValue(from: bodyData) ?? ""
 
+        // 实测后端要求 authorization 同时作为 HTTP 头出现，故兜底 fetch 也需带该头。
         let script = """
         const response = await fetch(path, {
             method: 'POST',

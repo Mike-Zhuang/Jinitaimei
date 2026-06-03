@@ -306,6 +306,7 @@ public final class LibrarySpaceAPI {
 
         let bodyData = try authorizedBodyData(body: body, token: token, path: path)
         request.httpBody = bodyData
+        // 实测：后端要求 authorization 同时出现在 HTTP 头中，仅放 body 会被判为「您尚未登录」(code=10001)。
         request.setValue("bearer\(token)", forHTTPHeaderField: "authorization")
         log("POST \(path) token=true len=\(token.count)")
 
@@ -489,6 +490,27 @@ private struct BaseResponse<DataType: Decodable>: Decodable {
     let data: DataType?
 
     var isSuccess: Bool { code == 0 || code == 1 || code == 200 }
+
+    enum CodingKeys: String, CodingKey {
+        case code, msg, data
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        // code 在不同接口可能是 Int 或字符串数字，统一兼容解析
+        if let intCode = try? container.decode(Int.self, forKey: .code) {
+            code = intCode
+        } else if let stringCode = try? container.decode(String.self, forKey: .code),
+                  let intCode = Int(stringCode) {
+            code = intCode
+        } else {
+            code = -1
+        }
+        // 部分接口（如 invitations、seat/map）成功时不返回 msg，缺失时按空串处理，避免整条链路解码中断
+        msg = (try? container.decode(String.self, forKey: .msg)) ?? ""
+        // 用 decodeIfPresent 保留真实的 data 结构不匹配错误，仅容忍 data 缺失/为 null
+        data = try container.decodeIfPresent(DataType.self, forKey: .data)
+    }
 }
 
 private typealias InvitationResponse = BaseResponse<JSONValue>
