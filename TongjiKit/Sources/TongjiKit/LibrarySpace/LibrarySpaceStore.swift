@@ -2,7 +2,7 @@ import Foundation
 import SwiftData
 
 @MainActor
-public final class LibrarySpaceStore: ObservableObject {
+public final class LibrarySpaceStore: ObservableObject, CampusLocalStore {
     @Published public private(set) var libraries: [LibrarySpaceLibrary] = []
     @Published public private(set) var areas: [LibrarySpaceArea] = []
     @Published public private(set) var rooms: [LibrarySpaceRoom] = []

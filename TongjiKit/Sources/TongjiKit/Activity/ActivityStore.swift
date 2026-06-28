@@ -3,7 +3,7 @@ import SwiftData
 
 /// 卓越星活动仓储：拉取 → 解析 → 替换式入库。
 @MainActor
-public final class ActivityStore: ObservableObject {
+public final class ActivityStore: ObservableObject, CampusLocalStore {
 
     @Published public private(set) var activities: [CampusActivity] = []
     @Published public private(set) var isLoading = false

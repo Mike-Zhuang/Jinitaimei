@@ -50,6 +50,8 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
     private var tongjiExtracted = false
     private var extractionTask: Task<Bool, Never>?
     private var urlObservation: NSKeyValueObservation?
+    private var ssoWarmUpWebView: WKWebView?
+    private var ssoWarmUpDelegate: AllTongjiSSOWarmUpDelegate?
 
     /// 当前流程模式，影响"完成"语义与是否清 WebView 数据。
     private enum Mode { case interactive, silent, passwordFill }
@@ -372,7 +374,40 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
             log("  个人信息拉取失败: \(error.localizedDescription)")
         }
 
+        Task { @MainActor [weak self] in
+            await self?.warmUpAllTongjiSSOCookie()
+        }
+
         return true
+    }
+
+    private func warmUpAllTongjiSSOCookie() async {
+        let url = URL(string: "https://all.tongji.edu.cn/new/index.html")!
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .default()
+        let warmUpWebView = WKWebView(frame: .zero, configuration: config)
+        ssoWarmUpWebView = warmUpWebView
+        let delegate = AllTongjiSSOWarmUpDelegate { [weak self, weak warmUpWebView] in
+            guard let self, let warmUpWebView else { return }
+            Task { @MainActor in
+                let cookies = await warmUpWebView.configuration.websiteDataStore.httpCookieStore.allCookies()
+                CookieJar.shared.mergeNative(cookies.filter { $0.domain.lowercased().contains("tongji.edu.cn") })
+                self.log("  all.tongji.edu.cn SSO Cookie 预热完成，cookieCount=\(cookies.count)")
+                self.ssoWarmUpWebView = nil
+                self.ssoWarmUpDelegate = nil
+            }
+        }
+        ssoWarmUpDelegate = delegate
+        warmUpWebView.navigationDelegate = delegate
+        warmUpWebView.load(URLRequest(url: url))
+
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard let self, self.ssoWarmUpDelegate === delegate else { return }
+            self.log("  all.tongji.edu.cn SSO Cookie 预热超时，跳过")
+            self.ssoWarmUpWebView = nil
+            self.ssoWarmUpDelegate = nil
+        }
     }
 
     private func finishCurrentMode(success: Bool) {
@@ -587,6 +622,26 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
         let line = "[Auth] \(message)"
         print(line)
         logger.info("\(line, privacy: .public)")
+    }
+}
+
+private final class AllTongjiSSOWarmUpDelegate: NSObject, WKNavigationDelegate {
+    private let onFinish: () -> Void
+
+    init(onFinish: @escaping () -> Void) {
+        self.onFinish = onFinish
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        onFinish()
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        onFinish()
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        onFinish()
     }
 }
 

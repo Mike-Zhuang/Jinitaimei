@@ -8,13 +8,12 @@ import Foundation
 /// 401/403 一次自动续期；ensureAuth **不再** `store.remove`。
 public final class CourseAPI {
 
-    private let apiHost = "https://1.tongji.edu.cn"
     private let store: CredentialStore
-    private let session: URLSession
+    private let httpClient: TongjiHTTPClient
 
     public init(store: CredentialStore = .shared, session: URLSession = .shared) {
         self.store = store
-        self.session = session
+        self.httpClient = TongjiHTTPClient(store: store, session: session)
     }
 
     public func fetchTimetableRaw() async throws -> String {
@@ -32,11 +31,6 @@ public final class CourseAPI {
     // MARK: - Once 版本（不重试，专供内部 / 续期流程使用）
 
     public func fetchTimetableRawOnce() async throws -> String {
-        guard let cookie = currentCookieHeader(), !cookie.isEmpty else {
-            throw AuthError.notLoggedIn("未找到登录凭证，请先完成登录")
-        }
-        let sessionId = store.get(CredentialStore.Keys.tongjiSessionId) ?? ""
-
         var studentCode = store.get(CredentialStore.Keys.tongjiStudentCode)
         if studentCode == nil || studentCode?.isEmpty == true {
             studentCode = try reEncryptStudentCode()
@@ -47,22 +41,19 @@ public final class CourseAPI {
 
         var calendarId = cachedCalendarIdIfUsable()
         if calendarId == nil {
-            calendarId = try await fetchCalendarIdOnce(cookie: cookie, sessionId: sessionId)
+            calendarId = try await fetchCalendarIdOnce()
                 ?? store.get(CredentialStore.Keys.tongjiCalendarId)
         }
 
         let timestamp = Int(Date().timeIntervalSince1970 * 1000)
         let calendarParam = (calendarId ?? "").addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        let url = URL(string:
-            "\(apiHost)/api/electionservice/reportManagement/findStudentTimetab" +
-            "?calendarId=\(calendarParam)&studentCode=\(studentCode)&_t=\(timestamp)"
-        )!
+        let request = try httpClient.request(
+            endpoint: .oneSystem,
+            path: "/api/electionservice/reportManagement/findStudentTimetab?calendarId=\(calendarParam)&studentCode=\(studentCode)&_t=\(timestamp)",
+            timeout: 15
+        )
 
-        var request = URLRequest(url: url)
-        applyAuthHeaders(&request, cookie: cookie, sessionId: sessionId)
-
-        let (data, response) = try await session.data(for: request)
-        try ensureAuth(response: response, url: url)
+        let data = try await httpClient.data(for: request, endpoint: .oneSystem)
 
         guard let str = String(data: data, encoding: .utf8) else {
             throw AuthError.loginFlowFailed("课表响应解码失败")
@@ -71,24 +62,21 @@ public final class CourseAPI {
     }
 
     public func refreshCalendarMetadataOnce() async throws {
-        guard let cookie = currentCookieHeader(), !cookie.isEmpty else {
-            throw AuthError.notLoggedIn("未找到登录凭证，请先完成登录")
-        }
-        let sessionId = store.get(CredentialStore.Keys.tongjiSessionId) ?? ""
-        _ = try await fetchCalendarIdOnce(cookie: cookie, sessionId: sessionId)
+        _ = try await fetchCalendarIdOnce()
     }
 
     @discardableResult
-    private func fetchCalendarIdOnce(cookie: String, sessionId: String) async throws -> String? {
+    private func fetchCalendarIdOnce() async throws -> String? {
         let timestamp = Int(Date().timeIntervalSince1970 * 1000)
-        let url = URL(string:
-            "\(apiHost)/api/baseresservice/schoolCalendar/currentTermCalendar?_t=\(timestamp)"
-        )!
-        var request = URLRequest(url: url)
-        applyAuthHeaders(&request, cookie: cookie, sessionId: sessionId)
+        let request = try httpClient.request(
+            endpoint: .oneSystem,
+            path: "/api/baseresservice/schoolCalendar/currentTermCalendar",
+            queryItems: [URLQueryItem(name: "_t", value: "\(timestamp)")],
+            headers: ["Accept": "application/json"],
+            timeout: 15
+        )
 
-        let (data, response) = try await session.data(for: request)
-        try ensureAuth(response: response, url: url)
+        let data = try await httpClient.data(for: request, endpoint: .oneSystem)
 
         guard let content = String(data: data, encoding: .utf8) else { return nil }
         cacheCalendarMetadata(content)
@@ -103,13 +91,6 @@ public final class CourseAPI {
     }
 
     // MARK: - 辅助
-
-    private func currentCookieHeader() -> String? {
-        let host = URL(string: apiHost)!
-        let fromJar = CookieJar.shared.loadHeader(for: host)
-        if !fromJar.isEmpty { return fromJar }
-        return store.get(CredentialStore.Keys.tongjiCookies)
-    }
 
     private func cacheCalendarMetadata(_ json: String) {
         if let beginDay = JSONUtils.extractNestedField(json, path: ["data", "schoolCalendar", "beginDay"]) {
@@ -171,32 +152,4 @@ public final class CourseAPI {
         return encrypted
     }
 
-    private func applyAuthHeaders(_ request: inout URLRequest, cookie: String, sessionId: String) {
-        request.setValue(cookie, forHTTPHeaderField: "Cookie")
-        if !sessionId.isEmpty {
-            request.setValue(sessionId, forHTTPHeaderField: "X-Token")
-        }
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue(
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-            forHTTPHeaderField: "User-Agent"
-        )
-        request.timeoutInterval = 15
-    }
-
-    /// 401/403 只抛 `AuthError.expired`；**不 remove**，留给 `AuthRecoveryManager`。
-    /// 同时把 `Set-Cookie` 合并到 `CookieJar`。
-    private func ensureAuth(response: URLResponse, url: URL) throws {
-        if let http = response as? HTTPURLResponse,
-           let fields = http.allHeaderFields as? [String: String] {
-            CookieJar.shared.mergeSetCookieFields(fields, for: url)
-        }
-        guard let http = response as? HTTPURLResponse else { return }
-        if http.statusCode == 401 || http.statusCode == 403 {
-            throw AuthError.expired("凭证已失效")
-        }
-        if !(200..<300).contains(http.statusCode) {
-            throw AuthError.loginFlowFailed("HTTP \(http.statusCode)")
-        }
-    }
 }

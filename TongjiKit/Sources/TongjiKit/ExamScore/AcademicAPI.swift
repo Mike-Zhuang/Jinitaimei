@@ -3,11 +3,11 @@ import Foundation
 public final class AcademicAPI {
     private let apiHost = "https://1.tongji.edu.cn"
     private let store: CredentialStore
-    private let session: URLSession
+    private let httpClient: TongjiHTTPClient
 
     public init(store: CredentialStore = .shared, session: URLSession = .shared) {
         self.store = store
-        self.session = session
+        self.httpClient = TongjiHTTPClient(store: store, session: session)
     }
 
     public func fetchExams() async throws -> TongjiExamFetchResult {
@@ -23,7 +23,7 @@ public final class AcademicAPI {
     }
 
     private func fetchExamsOnce() async throws -> TongjiExamFetchResult {
-        try await switchCurrentAuthId(9102)
+        try await httpClient.switchOneSystemAuthContext(.examSchedule)
         let calendar = try await fetchExamCalendar()
         let items = try await fetchExamItems(calendarId: calendar.calendarId)
         return TongjiExamFetchResult(
@@ -38,36 +38,21 @@ public final class AcademicAPI {
         guard let studentId = store.get(CredentialStore.Keys.tongjiUid), !studentId.isEmpty else {
             throw AuthError.notLoggedIn("缺少学号，请重新登录校园账户")
         }
-        try await switchCurrentAuthId(12174)
+        try await httpClient.switchOneSystemAuthContext(.gradeReport)
         let tags = try await fetchCourseTags(studentId: studentId)
         return try await fetchGradeSummary(studentId: studentId, tags: tags)
     }
 
-    private func switchCurrentAuthId(_ authId: Int) async throws {
-        let url = URL(string: "\(apiHost)/api/sessionservice/session/currentAuthId")!
-        var request = try authorizedRequest(url: url)
-        request.httpMethod = "POST"
-        request.httpBody = try JSONEncoder().encode(CurrentAuthRequest(authId: authId))
-
-        let (data, response) = try await session.data(for: request)
-        try ensureAuth(response: response, url: url)
-        let payload = try JSONDecoder().decode(CurrentAuthResponse.self, from: data)
-        guard payload.code == 200 else {
-            throw AuthError.loginFlowFailed(payload.msg.isEmpty ? "切换教务上下文失败" : payload.msg)
-        }
-    }
-
     private func fetchExamCalendar() async throws -> ExamCalendarInfo {
-        let url = URL(string:
-            "\(apiHost)/api/electionservice/underGraduateExamSwitch/getExamCalendar?examType=1&switchType=null"
-        )!
-        var request = try authorizedRequest(url: url)
-        request.httpMethod = "POST"
-        request.httpBody = Data("1".utf8)
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        let request = try httpClient.request(
+            endpoint: .oneSystem,
+            path: "/api/electionservice/underGraduateExamSwitch/getExamCalendar?examType=1&switchType=null",
+            method: "POST",
+            headers: ["Content-Type": "application/x-www-form-urlencoded"],
+            body: Data("1".utf8)
+        )
 
-        let (data, response) = try await session.data(for: request)
-        try ensureAuth(response: response, url: url)
+        let data = try await httpClient.data(for: request, endpoint: .oneSystem)
         let payload = try JSONDecoder().decode(ExamCalendarResponse.self, from: data)
         guard payload.code == 200, let calendar = payload.data else {
             throw AuthError.loginFlowFailed(payload.msg.isEmpty ? "考试学期响应异常" : payload.msg)
@@ -84,19 +69,21 @@ public final class AcademicAPI {
         var switchRemark = ""
 
         while true {
-            let url = URL(string: "\(apiHost)/api/electionservice/undergraduateExamQuery/getStudentListPage")!
-            var request = try authorizedRequest(url: url)
-            request.httpMethod = "POST"
-            request.httpBody = try JSONEncoder().encode(
+            let body = try JSONEncoder().encode(
                 ExamListRequest(
                     pageNum: page,
                     pageSize: 20,
                     condition: ExamListCondition(calendarId: calendarId, examSituation: "", examType: 1)
                 )
             )
+            let request = try httpClient.request(
+                endpoint: .oneSystem,
+                path: "/api/electionservice/undergraduateExamQuery/getStudentListPage",
+                method: "POST",
+                body: body
+            )
 
-            let (data, response) = try await session.data(for: request)
-            try ensureAuth(response: response, url: url)
+            let data = try await httpClient.data(for: request, endpoint: .oneSystem)
             let payload = try JSONDecoder().decode(ExamListResponse.self, from: data)
             guard payload.code == 200, let wrapper = payload.data else {
                 throw AuthError.loginFlowFailed(payload.msg.isEmpty ? "考试安排响应异常" : payload.msg)
@@ -132,14 +119,17 @@ public final class AcademicAPI {
 
     private func fetchCourseTags(studentId: String) async throws -> [String: String] {
         let timestamp = Int(Date().timeIntervalSince1970 * 1000)
-        let url = URL(string:
-            "\(apiHost)/api/scoremanagementservice/studentScoreBk/queryCourseTag?studentId=\(studentId)&_t=\(timestamp)"
-        )!
-        var request = try authorizedRequest(url: url)
-        request.setValue("\(apiHost)/oldStysteMyGrades", forHTTPHeaderField: "Referer")
+        let request = try httpClient.request(
+            endpoint: .oneSystem,
+            path: "/api/scoremanagementservice/studentScoreBk/queryCourseTag",
+            queryItems: [
+                URLQueryItem(name: "studentId", value: studentId),
+                URLQueryItem(name: "_t", value: "\(timestamp)")
+            ],
+            headers: ["Referer": "\(apiHost)/oldStysteMyGrades"]
+        )
 
-        let (data, response) = try await session.data(for: request)
-        try ensureAuth(response: response, url: url)
+        let data = try await httpClient.data(for: request, endpoint: .oneSystem)
         let payload = try JSONDecoder().decode(CourseTagResponse.self, from: data)
         guard payload.code == 200 else {
             throw AuthError.loginFlowFailed(payload.msg.isEmpty ? "课程标签响应异常" : payload.msg)
@@ -159,14 +149,17 @@ public final class AcademicAPI {
 
     private func fetchGradeSummary(studentId: String, tags: [String: String]) async throws -> TongjiGradeFetchResult {
         let timestamp = Int(Date().timeIntervalSince1970 * 1000)
-        let url = URL(string:
-            "\(apiHost)/api/scoremanagementservice/scoreGrades/getMyGrades?studentId=\(studentId)&_t=\(timestamp)"
-        )!
-        var request = try authorizedRequest(url: url)
-        request.setValue("\(apiHost)/oldStysteMyGrades", forHTTPHeaderField: "Referer")
+        let request = try httpClient.request(
+            endpoint: .oneSystem,
+            path: "/api/scoremanagementservice/scoreGrades/getMyGrades",
+            queryItems: [
+                URLQueryItem(name: "studentId", value: studentId),
+                URLQueryItem(name: "_t", value: "\(timestamp)")
+            ],
+            headers: ["Referer": "\(apiHost)/oldStysteMyGrades"]
+        )
 
-        let (data, response) = try await session.data(for: request)
-        try ensureAuth(response: response, url: url)
+        let data = try await httpClient.data(for: request, endpoint: .oneSystem)
         let payload = try JSONDecoder().decode(GradeResponse.self, from: data)
         guard payload.code == 200, let data = payload.data else {
             throw AuthError.loginFlowFailed(payload.msg.isEmpty ? "成绩响应异常" : payload.msg)
@@ -208,49 +201,6 @@ public final class AcademicAPI {
                 )
             }
         )
-    }
-
-    private func authorizedRequest(url: URL) throws -> URLRequest {
-        guard let cookie = currentCookieHeader(), !cookie.isEmpty else {
-            throw AuthError.notLoggedIn("未找到登录凭证，请先在设置中登录校园账户")
-        }
-        let sessionId = store.get(CredentialStore.Keys.tongjiSessionId) ?? ""
-        var request = URLRequest(url: url)
-        request.setValue(cookie, forHTTPHeaderField: "Cookie")
-        if !sessionId.isEmpty {
-            request.setValue(sessionId, forHTTPHeaderField: "X-Token")
-        }
-        request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
-        request.setValue("application/json;charset=UTF-8", forHTTPHeaderField: "Content-Type")
-        request.setValue(apiHost, forHTTPHeaderField: "Origin")
-        request.setValue("\(apiHost)/workbench", forHTTPHeaderField: "Referer")
-        request.setValue(
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-            forHTTPHeaderField: "User-Agent"
-        )
-        request.timeoutInterval = 20
-        return request
-    }
-
-    private func currentCookieHeader() -> String? {
-        let host = URL(string: apiHost)!
-        let fromJar = CookieJar.shared.loadHeader(for: host)
-        if !fromJar.isEmpty { return fromJar }
-        return store.get(CredentialStore.Keys.tongjiCookies)
-    }
-
-    private func ensureAuth(response: URLResponse, url: URL) throws {
-        if let http = response as? HTTPURLResponse,
-           let fields = http.allHeaderFields as? [String: String] {
-            CookieJar.shared.mergeSetCookieFields(fields, for: url)
-        }
-        guard let http = response as? HTTPURLResponse else { return }
-        if http.statusCode == 401 || http.statusCode == 403 {
-            throw AuthError.expired("凭证已失效")
-        }
-        if !(200..<300).contains(http.statusCode) {
-            throw AuthError.loginFlowFailed("HTTP \(http.statusCode)")
-        }
     }
 
     private static func cleanNumber(_ value: Double?) -> String {
@@ -310,15 +260,6 @@ private struct ExamCalendarInfo {
 private struct ExamItemsResult {
     let switchRemark: String
     let items: [TongjiExamItem]
-}
-
-private struct CurrentAuthRequest: Encodable {
-    let authId: Int
-}
-
-private struct CurrentAuthResponse: Decodable {
-    let code: Int
-    let msg: String
 }
 
 private struct ExamCalendarResponse: Decodable {

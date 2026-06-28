@@ -6,7 +6,7 @@ import SwiftData
 /// 移植自 wish_drom `TongjiScheduleProvider.PersistRawDataAsync` +
 /// `ReplaceSchedulesAsync` + `GetAllSchedulesAsync`。
 @MainActor
-public final class CourseStore: ObservableObject {
+public final class CourseStore: ObservableObject, CampusLocalStore {
 
     @Published public private(set) var schedules: [CourseSchedule] = []
     @Published public private(set) var isLoading = false

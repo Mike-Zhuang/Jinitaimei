@@ -2,13 +2,12 @@ import Foundation
 
 /// 一系统会话接口。
 public final class SessionAPI {
-    private let apiHost = "https://1.tongji.edu.cn"
     private let store: CredentialStore
-    private let session: URLSession
+    private let httpClient: TongjiHTTPClient
 
     public init(store: CredentialStore = .shared, session: URLSession = .shared) {
         self.store = store
-        self.session = session
+        self.httpClient = TongjiHTTPClient(store: store, session: session)
     }
 
     /// 公开 API：自带 `withAuthRetry` 单次重试。
@@ -23,18 +22,16 @@ public final class SessionAPI {
     /// 401 / 403 时仅 `throw AuthError.expired`，**绝不清 Keychain**。
     @discardableResult
     public func refreshSessionUserOnce() async throws -> TongjiUserProfile {
-        guard let cookie = currentCookieHeader(), !cookie.isEmpty else {
-            throw AuthError.notLoggedIn("未找到登录凭证，请先完成登录")
-        }
-        let sessionId = store.get(CredentialStore.Keys.tongjiSessionId) ?? ""
         let timestamp = Int(Date().timeIntervalSince1970 * 1000)
-        let url = URL(string: "\(apiHost)/api/sessionservice/session/getSessionUser?_t=\(timestamp)")!
+        let request = try httpClient.request(
+            endpoint: .oneSystem,
+            path: "/api/sessionservice/session/getSessionUser",
+            queryItems: [URLQueryItem(name: "_t", value: "\(timestamp)")],
+            headers: ["Accept": "application/json"],
+            timeout: 15
+        )
 
-        var request = URLRequest(url: url)
-        applyAuthHeaders(&request, cookie: cookie, sessionId: sessionId)
-
-        let (data, response) = try await session.data(for: request)
-        try ensureAuth(response: response, url: url)
+        let data = try await httpClient.data(for: request, endpoint: .oneSystem)
 
         let payload = try JSONDecoder().decode(SessionUserResponse.self, from: data)
         guard payload.code == 200, let data = payload.data else {
@@ -59,13 +56,6 @@ public final class SessionAPI {
         return profile
     }
 
-    private func currentCookieHeader() -> String? {
-        let host = URL(string: apiHost)!
-        let fromJar = CookieJar.shared.loadHeader(for: host)
-        if !fromJar.isEmpty { return fromJar }
-        return store.get(CredentialStore.Keys.tongjiCookies)
-    }
-
     private func cache(_ profile: TongjiUserProfile) {
         store.set(profile.uid, for: CredentialStore.Keys.tongjiUid)
         store.set(profile.name, for: CredentialStore.Keys.tongjiUserName)
@@ -88,30 +78,6 @@ public final class SessionAPI {
         }
     }
 
-    private func applyAuthHeaders(_ request: inout URLRequest, cookie: String, sessionId: String) {
-        request.setValue(cookie, forHTTPHeaderField: "Cookie")
-        if !sessionId.isEmpty {
-            request.setValue(sessionId, forHTTPHeaderField: "X-Token")
-        }
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.timeoutInterval = 15
-    }
-
-    /// 401/403 只抛 `AuthError.expired`；**不再** `store.remove`，
-    /// 留给 `AuthRecoveryManager` 决定是否清理。
-    private func ensureAuth(response: URLResponse, url: URL) throws {
-        if let http = response as? HTTPURLResponse,
-           let fields = http.allHeaderFields as? [String: String] {
-            CookieJar.shared.mergeSetCookieFields(fields, for: url)
-        }
-        guard let http = response as? HTTPURLResponse else { return }
-        if http.statusCode == 401 || http.statusCode == 403 {
-            throw AuthError.expired("凭证已失效")
-        }
-        if !(200..<300).contains(http.statusCode) {
-            throw AuthError.loginFlowFailed("HTTP \(http.statusCode)")
-        }
-    }
 }
 
 private struct SessionUserResponse: Decodable {

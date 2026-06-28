@@ -3,7 +3,7 @@ import os.log
 import SwiftData
 
 @MainActor
-public final class YikatongStore: ObservableObject {
+public final class YikatongStore: ObservableObject, CampusLocalStore {
     @Published public private(set) var snapshots: [CampusCardBalanceSnapshot] = []
     @Published public private(set) var transactions: [CampusCardTransaction] = []
     @Published public private(set) var isLoading = false
@@ -87,6 +87,10 @@ public final class YikatongStore: ObservableObject {
             transactions = []
             lastError = error.localizedDescription
         }
+    }
+
+    public func clearError() {
+        lastError = nil
     }
 
     private func persist(_ payload: CampusCardBalancePayload) throws {

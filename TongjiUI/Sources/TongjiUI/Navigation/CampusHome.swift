@@ -14,6 +14,7 @@ public struct CampusHome: View {
     @StateObject private var model = CampusHomeModel()
     @State private var showEditor = false
     @State private var refreshToken = UUID()
+    @State private var isRefreshingServices = false
 
     public init() {}
 
@@ -89,7 +90,12 @@ public struct CampusHome: View {
         }
     }
 
+    @MainActor
     private func refreshCampusServices() async {
+        guard !isRefreshingServices else { return }
+        isRefreshingServices = true
+        defer { isRefreshingServices = false }
+
         campusModel.refresh()
         guard campusModel.loggedIn else { return }
 
@@ -105,10 +111,17 @@ public struct CampusHome: View {
             }
         }
 
-        await YikatongStore(modelContext: modelContext).sync(force: true)
-        await ExamScheduleStore(modelContext: modelContext).sync()
-        await GradeStore(modelContext: modelContext).sync()
-        await LibrarySpaceStore(modelContext: modelContext).sync(force: true)
+        let yikatongStore = YikatongStore(modelContext: modelContext)
+        let examStore = ExamScheduleStore(modelContext: modelContext)
+        let gradeStore = GradeStore(modelContext: modelContext)
+        let libraryStore = LibrarySpaceStore(modelContext: modelContext)
+        let localStores: [CampusLocalStore] = [yikatongStore, examStore, gradeStore, libraryStore]
+        localStores.forEach { $0.clearError() }
+
+        await yikatongStore.sync(force: true)
+        await examStore.sync()
+        await gradeStore.sync()
+        await libraryStore.sync(force: true)
 
         refreshToken = UUID()
     }

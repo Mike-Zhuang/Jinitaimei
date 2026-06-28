@@ -2,7 +2,7 @@ import Foundation
 import SwiftData
 
 @MainActor
-public final class ExamScheduleStore: ObservableObject {
+public final class ExamScheduleStore: ObservableObject, CampusLocalStore {
     @Published public private(set) var exams: [ExamScheduleItem] = []
     @Published public private(set) var isLoading = false
     @Published public private(set) var lastError: String?
@@ -123,7 +123,7 @@ public final class ExamScheduleStore: ObservableObject {
 }
 
 @MainActor
-public final class GradeStore: ObservableObject {
+public final class GradeStore: ObservableObject, CampusLocalStore {
     @Published public private(set) var summary: GradeSummarySnapshot?
     @Published public private(set) var courses: [GradeCourseRecord] = []
     @Published public private(set) var isLoading = false
