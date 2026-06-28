@@ -52,11 +52,40 @@ public final class LibrarySpaceStore: ObservableObject {
         rooms
             .filter { $0.libraryId == library.id || $0.libraryName == library.name }
             .sorted { lhs, rhs in
-                if lhs.floorName == rhs.floorName {
-                    return lhs.name < rhs.name
+                let floorOrder = Self.compareNatural(lhs.floorName, rhs.floorName)
+                if floorOrder != .orderedSame {
+                    return floorOrder == .orderedAscending
                 }
-                return lhs.floorName.localizedStandardCompare(rhs.floorName) == .orderedAscending
+
+                let nameOrder = Self.compareNatural(lhs.name, rhs.name)
+                if nameOrder != .orderedSame {
+                    return nameOrder == .orderedAscending
+                }
+
+                let lhsNumber = Self.firstNumber(in: "\(lhs.name) \(lhs.mergedName) \(lhs.id)")
+                let rhsNumber = Self.firstNumber(in: "\(rhs.name) \(rhs.mergedName) \(rhs.id)")
+                if let lhsNumber, let rhsNumber, lhsNumber != rhsNumber {
+                    return lhsNumber < rhsNumber
+                }
+
+                return lhs.id.localizedStandardCompare(rhs.id) == .orderedAscending
             }
+    }
+
+    private static func compareNatural(_ lhs: String, _ rhs: String) -> ComparisonResult {
+        lhs.localizedStandardCompare(rhs)
+    }
+
+    private static func firstNumber(in value: String) -> Int? {
+        var digits = ""
+        for character in value {
+            if character.isNumber {
+                digits.append(character)
+            } else if !digits.isEmpty {
+                break
+            }
+        }
+        return digits.isEmpty ? nil : Int(digits)
     }
 
     public func loadFromLocal() {
@@ -105,7 +134,7 @@ public final class LibrarySpaceStore: ObservableObject {
         lastError = nil
 
         do {
-            let result = try await sharedOverviewResult()
+            let result = try await sharedOverviewResult(force: force)
             let syncTime = Date()
             try clearAll()
 
@@ -165,13 +194,13 @@ public final class LibrarySpaceStore: ObservableObject {
         }
     }
 
-    private func sharedOverviewResult() async throws -> LibrarySpaceOverviewResult {
+    private func sharedOverviewResult(force: Bool) async throws -> LibrarySpaceOverviewResult {
         if let task = Self.overviewTask {
             return try await task.value
         }
 
         let task = Task { [api] in
-            try await api.fetchOverview()
+            try await api.fetchOverview(force: force)
         }
         Self.overviewTask = task
         defer { Self.overviewTask = nil }

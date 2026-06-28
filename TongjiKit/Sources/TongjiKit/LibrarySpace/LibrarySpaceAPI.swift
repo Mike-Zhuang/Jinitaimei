@@ -6,15 +6,18 @@ public final class LibrarySpaceAPI {
     private let logger = Logger(subsystem: "com.jinitaimei.app", category: "LibrarySpaceAPI")
     private let store: CredentialStore
     private let session: URLSession
+    private static let seminarGate = LibrarySeminarRequestGate(maxConcurrent: 3, cooldownNanoseconds: 650_000_000)
+    private static let sessionBootstrapper = LibrarySpaceSessionBootstrapper(cacheDuration: 600)
+    private static let tokenExpiryLeeway: TimeInterval = 300
 
     public init(store: CredentialStore = .shared, session: URLSession = .shared) {
         self.store = store
         self.session = session
     }
 
-    public func fetchOverview() async throws -> LibrarySpaceOverviewResult {
+    public func fetchOverview(force: Bool = false) async throws -> LibrarySpaceOverviewResult {
         try await withLibrarySpaceAuthRetry { [self] in
-            try await fetchOverviewOnce()
+            try await fetchOverviewOnce(force: force)
         }
     }
 
@@ -25,14 +28,13 @@ public final class LibrarySpaceAPI {
     }
 
     public func fetchSeminarRoomDetail(room: LibrarySpaceRoom) async throws -> LibrarySeminarRoomDetail {
-        try await withLibrarySpaceAuthRetry { [self] in
-            try await fetchSeminarRoomDetailOnce(room: room)
+        try await Self.seminarGate.run {
+            try await self.fetchSeminarRoomDetailWithRetry(room: room)
         }
     }
 
-    private func fetchOverviewOnce() async throws -> LibrarySpaceOverviewResult {
-        _ = try await ensureToken()
-        try await warmUpReserveIndex()
+    private func fetchOverviewOnce(force: Bool) async throws -> LibrarySpaceOverviewResult {
+        _ = try await ensureLibrarySession(force: force)
 
         let seatPayload: QuickSelectResponse = try await post(
             path: "/reserve/index/quickSelect",
@@ -99,7 +101,7 @@ public final class LibrarySpaceAPI {
     }
 
     private func fetchSeatAreaDetailOnce(area: LibrarySpaceArea) async throws -> LibrarySeatAreaDetail {
-        _ = try await ensureToken()
+        _ = try await ensureLibrarySession(force: false)
 
         async let labelsRaw: SeatLabelResponse = post(path: "/api/seat/label", body: EmptyAuthorizedRequest())
         async let mapRaw: SeatMapResponse = post(path: "/api/seat/map", body: IdRequest(id: area.id))
@@ -185,19 +187,16 @@ public final class LibrarySpaceAPI {
     }
 
     private func fetchSeminarRoomDetailOnce(room: LibrarySpaceRoom) async throws -> LibrarySeminarRoomDetail {
-        _ = try await ensureToken()
+        _ = try await ensureLibrarySession(force: false)
 
-        async let detailRaw: SeminarDetailResponse = post(
+        let detailPayload: SeminarDetailResponse = try await post(
             path: "/api/Seminar/detail",
             body: SeminarDetailRequest(id: room.id, day: Self.todayString())
         )
-        async let availabilityRaw: SeminarAvailabilityResponse = post(
+        let availabilityPayload: SeminarAvailabilityResponse = try await post(
             path: "/api/Seminar/v1seminar",
             body: SeminarAvailabilityRequest(room: room.id, area: room.libraryId)
         )
-
-        let detailPayload = try await detailRaw
-        let availabilityPayload = try await availabilityRaw
         guard detailPayload.isSuccess, availabilityPayload.isSuccess else {
             throw AuthError.loginFlowFailed("研习室时段响应异常")
         }
@@ -210,15 +209,15 @@ public final class LibrarySpaceAPI {
                 let info = raw.info
                 let minPeople = info.minPerson.intValue
                 let maxPeople = info.maxPerson.intValue
-                let segments = info.list.map {
-                    LibrarySeminarFreeSegment(
-                        id: $0.id,
-                        beginText: Self.timeText($0.beginTimestamp),
-                        endText: Self.timeText($0.endTimestamp),
-                        beginMinute: $0.beginNum,
-                        endMinute: $0.endNum
-                    )
-                }
+                // v1seminar 的 info.list 表示已被占用/预约的区间，不是可预约区间。
+                // App 需要展示真正可用时间，因此用开放时间扣除已占用区间；今天已过去的时间也不可再预约。
+                let segments = Self.availableSeminarSegments(
+                    date: raw.date,
+                    openStartMinute: info.startTime,
+                    openEndMinute: info.endTime,
+                    minDuration: info.minTime,
+                    occupiedSegments: info.list
+                )
                 return LibrarySeminarRoomAvailability(
                     id: "\(room.id)-\(raw.date)",
                     roomId: room.id,
@@ -242,13 +241,34 @@ public final class LibrarySpaceAPI {
         )
     }
 
+    private func fetchSeminarRoomDetailWithRetry(room: LibrarySpaceRoom) async throws -> LibrarySeminarRoomDetail {
+        var lastError: Error?
+        for attempt in 1...3 {
+            do {
+                if attempt > 1 {
+                    log("研习室 \(room.id) 第 \(attempt) 次重试")
+                }
+                return try await withLibrarySpaceAuthRetry { [self] in
+                    try await fetchSeminarRoomDetailOnce(room: room)
+                }
+            } catch {
+                lastError = error
+                guard attempt < 3 else { break }
+                let delay = Self.seminarRetryDelayNanoseconds(for: attempt)
+                log("研习室 \(room.id) 获取失败，\(String(format: "%.1f", Double(delay) / 1_000_000_000)) 秒后重试：\(Self.redactedMessage(error.localizedDescription))")
+                try? await Task.sleep(nanoseconds: delay)
+            }
+        }
+        throw lastError ?? AuthError.loginFlowFailed("研习室时段加载失败")
+    }
+
     private func warmUpReserveIndex() async throws {
         let invitationPayload: InvitationResponse = try await post(
             path: "/api/member/invitations",
             body: EmptyAuthorizedRequest()
         )
         guard invitationPayload.isSuccess else {
-            throw AuthError.loginFlowFailed(invitationPayload.msg.isEmpty ? "图书馆用户状态初始化异常" : invitationPayload.msg)
+            throw libraryBootstrapError(path: "/api/member/invitations", message: invitationPayload.msg, fallback: "图书馆用户状态初始化异常")
         }
 
         let seatPayload: ReserveIndexResponse = try await post(
@@ -256,7 +276,7 @@ public final class LibrarySpaceAPI {
             body: IdRequest(id: "1")
         )
         guard seatPayload.isSuccess else {
-            throw AuthError.loginFlowFailed(seatPayload.msg.isEmpty ? "图书馆座位入口响应异常" : seatPayload.msg)
+            throw libraryBootstrapError(path: "/reserve/index/index?id=1", message: seatPayload.msg, fallback: "图书馆座位入口响应异常")
         }
 
         let roomPayload: ReserveIndexResponse = try await post(
@@ -264,13 +284,36 @@ public final class LibrarySpaceAPI {
             body: IdRequest(id: "2")
         )
         guard roomPayload.isSuccess else {
-            throw AuthError.loginFlowFailed(roomPayload.msg.isEmpty ? "图书馆研习室入口响应异常" : roomPayload.msg)
+            throw libraryBootstrapError(path: "/reserve/index/index?id=2", message: roomPayload.msg, fallback: "图书馆研习室入口响应异常")
         }
+    }
+
+    private func ensureLibrarySession(force: Bool) async throws -> String {
+        let token = try await ensureToken()
+        let fingerprint = Self.tokenFingerprint(token)
+        try await Self.sessionBootstrapper.run(tokenFingerprint: fingerprint, force: force) { [self] in
+            log("开始图书馆用户状态初始化 force=\(force) tokenFingerprint=\(fingerprint)")
+            try await warmUpReserveIndex()
+            log("图书馆用户状态初始化完成 tokenFingerprint=\(fingerprint)")
+        }
+        return token
     }
 
     private func ensureToken() async throws -> String {
         if let token = store.get(CredentialStore.Keys.librarySpaceBearerToken), !token.isEmpty {
-            return token
+            if let expiresAt = Self.jwtExpirationDate(token) {
+                let remainingSeconds = expiresAt.timeIntervalSinceNow
+                log("本地图书馆 JWT exp 已解析，剩余分钟=\(String(format: "%.1f", remainingSeconds / 60))")
+                if remainingSeconds > Self.tokenExpiryLeeway {
+                    return token
+                }
+                store.remove(CredentialStore.Keys.librarySpaceBearerToken)
+                await Self.sessionBootstrapper.invalidate()
+                log("本地图书馆 JWT 已过期或即将过期，清除后触发续期")
+            } else {
+                log("本地图书馆 JWT exp 无法解析，先用 bootstrap 验证")
+                return token
+            }
         }
 
         log("本地无图书馆 JWT，先触发续期")
@@ -279,6 +322,11 @@ public final class LibrarySpaceAPI {
               let token = store.get(CredentialStore.Keys.librarySpaceBearerToken),
               !token.isEmpty else {
             throw AuthError.notLoggedIn("图书馆系统登录失效，请稍后重试")
+        }
+        if let expiresAt = Self.jwtExpirationDate(token) {
+            log("图书馆续期后 JWT exp 已解析，剩余分钟=\(String(format: "%.1f", expiresAt.timeIntervalSinceNow / 60))")
+        } else {
+            log("图书馆续期后 JWT exp 仍无法解析，将依赖 bootstrap 验证")
         }
         return token
     }
@@ -374,7 +422,23 @@ public final class LibrarySpaceAPI {
 
     private func clearTokenAfterAuthFailure(path: String, reason: String) {
         store.remove(CredentialStore.Keys.librarySpaceBearerToken)
+        Task {
+            await Self.sessionBootstrapper.invalidate()
+        }
         log("\(path) 判定图书馆 JWT 失效：\(reason)，已清除本地 token")
+    }
+
+    private func libraryBootstrapError(path: String, message: String, fallback: String) -> AuthError {
+        let visibleMessage = message.isEmpty ? fallback : message
+        log("\(path) 图书馆用户状态初始化失败：\(Self.redactedMessage(visibleMessage))")
+        if message.isEmpty || Self.responseRequiresLogin(code: nil, msg: message) {
+            store.remove(CredentialStore.Keys.librarySpaceBearerToken)
+            Task {
+                await Self.sessionBootstrapper.invalidate()
+            }
+            return .expired("图书馆系统登录失效，请稍后重试")
+        }
+        return .loginFlowFailed(visibleMessage)
     }
 
     private func logResponse(path: String, statusCode: Int, data: Data) {
@@ -411,6 +475,46 @@ public final class LibrarySpaceAPI {
         return String(value.prefix(80)) + "..."
     }
 
+    private static func jwtExpirationDate(_ token: String) -> Date? {
+        let parts = token.split(separator: ".")
+        guard parts.count >= 2,
+              let payloadData = base64URLDecodedData(String(parts[1])),
+              let object = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any] else {
+            return nil
+        }
+
+        if let exp = object["exp"] as? TimeInterval {
+            return Date(timeIntervalSince1970: exp)
+        }
+        if let exp = object["exp"] as? String, let value = TimeInterval(exp) {
+            return Date(timeIntervalSince1970: value)
+        }
+        return nil
+    }
+
+    private static func base64URLDecodedData(_ value: String) -> Data? {
+        var base64 = value
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        let padding = base64.count % 4
+        if padding > 0 {
+            base64 += String(repeating: "=", count: 4 - padding)
+        }
+        return Data(base64Encoded: base64)
+    }
+
+    private static func tokenFingerprint(_ token: String) -> String {
+        let prefix = token.prefix(8)
+        let suffix = token.suffix(6)
+        return "\(prefix)…\(suffix)"
+    }
+
+    private static func seminarRetryDelayNanoseconds(for attempt: Int) -> UInt64 {
+        let base: UInt64 = attempt == 1 ? 1_200_000_000 : 2_400_000_000
+        let jitter = UInt64.random(in: 0...600_000_000)
+        return base + jitter
+    }
+
     private static func todayString() -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
@@ -433,6 +537,89 @@ public final class LibrarySpaceAPI {
         if parts.count == 2 { return (parts[0], parts[1]) }
         if let first = parts.first { return (first, first) }
         return (0, 0)
+    }
+
+    private static func availableSeminarSegments(
+        date: String,
+        openStartMinute: Int,
+        openEndMinute: Int,
+        minDuration: Int,
+        occupiedSegments: [SeminarFreeRaw]
+    ) -> [LibrarySeminarFreeSegment] {
+        let today = todayString()
+        var cursor = openStartMinute
+
+        if date < today {
+            cursor = openEndMinute
+        } else if date == today {
+            cursor = max(cursor, currentShanghaiMinute())
+        }
+
+        let occupied = occupiedSegments
+            .map { (begin: max($0.beginNum, openStartMinute), end: min($0.endNum, openEndMinute)) }
+            .filter { $0.end > $0.begin }
+            .sorted { lhs, rhs in
+                if lhs.begin != rhs.begin { return lhs.begin < rhs.begin }
+                return lhs.end < rhs.end
+            }
+
+        var result: [LibrarySeminarFreeSegment] = []
+        for segment in occupied {
+            if segment.begin > cursor {
+                appendAvailableSegment(
+                    from: cursor,
+                    to: segment.begin,
+                    date: date,
+                    minDuration: minDuration,
+                    into: &result
+                )
+            }
+            cursor = max(cursor, segment.end)
+        }
+
+        if cursor < openEndMinute {
+            appendAvailableSegment(
+                from: cursor,
+                to: openEndMinute,
+                date: date,
+                minDuration: minDuration,
+                into: &result
+            )
+        }
+
+        return result
+    }
+
+    private static func appendAvailableSegment(
+        from beginMinute: Int,
+        to endMinute: Int,
+        date: String,
+        minDuration: Int,
+        into result: inout [LibrarySeminarFreeSegment]
+    ) {
+        guard endMinute > beginMinute, endMinute - beginMinute >= minDuration else { return }
+        result.append(
+            LibrarySeminarFreeSegment(
+                id: "\(date)-\(beginMinute)-\(endMinute)",
+                beginText: minuteText(beginMinute),
+                endText: minuteText(endMinute),
+                beginMinute: beginMinute,
+                endMinute: endMinute
+            )
+        )
+    }
+
+    private static func currentShanghaiMinute() -> Int {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        let components = calendar.dateComponents([.hour, .minute], from: Date())
+        return (components.hour ?? 0) * 60 + (components.minute ?? 0)
+    }
+
+    private static func minuteText(_ minute: Int) -> String {
+        let hour = max(minute, 0) / 60
+        let minutePart = max(minute, 0) % 60
+        return String(format: "%02d:%02d", hour, minutePart)
     }
 
     private static func timeText(_ timestamp: String) -> String {
@@ -577,6 +764,101 @@ private enum JSONValue: Decodable {
             array.append(try container.decode(JSONValue.self))
         }
         self = .array(array)
+    }
+}
+
+private actor LibrarySpaceSessionBootstrapper {
+    private let cacheDuration: TimeInterval
+    private var lastTokenFingerprint: String?
+    private var lastBootstrapTime: Date?
+    private var currentTask: Task<Void, Error>?
+
+    init(cacheDuration: TimeInterval) {
+        self.cacheDuration = cacheDuration
+    }
+
+    func run(
+        tokenFingerprint: String,
+        force: Bool,
+        operation: @escaping @Sendable () async throws -> Void
+    ) async throws {
+        if !force,
+           lastTokenFingerprint == tokenFingerprint,
+           let lastBootstrapTime,
+           Date().timeIntervalSince(lastBootstrapTime) < cacheDuration {
+            return
+        }
+
+        if let currentTask {
+            try await currentTask.value
+            return
+        }
+
+        let task = Task {
+            try await operation()
+        }
+        currentTask = task
+
+        do {
+            try await task.value
+            lastTokenFingerprint = tokenFingerprint
+            lastBootstrapTime = Date()
+            currentTask = nil
+        } catch {
+            currentTask = nil
+            throw error
+        }
+    }
+
+    func invalidate() {
+        lastTokenFingerprint = nil
+        lastBootstrapTime = nil
+    }
+}
+
+private actor LibrarySeminarRequestGate {
+    private let maxConcurrent: Int
+    private let cooldownNanoseconds: UInt64
+    private var activeCount = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(maxConcurrent: Int, cooldownNanoseconds: UInt64) {
+        self.maxConcurrent = max(1, maxConcurrent)
+        self.cooldownNanoseconds = cooldownNanoseconds
+    }
+
+    func run<T>(_ operation: () async throws -> T) async throws -> T {
+        await acquire()
+        do {
+            let value = try await operation()
+            await releaseAfterCooldown()
+            return value
+        } catch {
+            await releaseAfterCooldown()
+            throw error
+        }
+    }
+
+    private func acquire() async {
+        if activeCount < maxConcurrent {
+            activeCount += 1
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    private func releaseAfterCooldown() async {
+        if cooldownNanoseconds > 0 {
+            try? await Task.sleep(nanoseconds: cooldownNanoseconds)
+        }
+        if let next = waiters.first {
+            waiters.removeFirst()
+            next.resume()
+        } else {
+            activeCount = max(0, activeCount - 1)
+        }
     }
 }
 
