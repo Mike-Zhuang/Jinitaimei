@@ -13,6 +13,7 @@ struct JinitaimeiApp: App {
         do {
             modelContainer = try ModelContainer(
                 for:
+                    SchoolCalendarTerm.self,
                     CourseSchedule.self,
                     CampusActivity.self,
                     CampusCardBalanceSnapshot.self,

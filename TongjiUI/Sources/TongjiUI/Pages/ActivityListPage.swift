@@ -81,6 +81,30 @@ public struct ActivityListPage: View {
                         ActivitySeparator()
                     }
 
+                    if store.hasMore && !store.activities.isEmpty {
+                        Button {
+                            Task { await store.loadMore() }
+                        } label: {
+                            HStack(spacing: 8) {
+                                if store.isLoadingMore {
+                                    ProgressView()
+                                }
+                                Text(store.isLoadingMore ? "加载中" : "加载更多")
+                            }
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(store.isLoadingMore)
+                        .task {
+                            guard !filterState.isActive else { return }
+                            await store.loadMore()
+                        }
+                        ActivitySeparator()
+                    }
+
                     if !store.isLoading {
                         if store.activities.isEmpty {
                             ContentUnavailableView(
@@ -116,7 +140,7 @@ public struct ActivityListPage: View {
                 .disabled(!campusModel.loggedIn)
 
                 Button {
-                    Task { await store.sync() }
+                    Task { await store.refreshFirstPage() }
                 } label: {
                     if store.isLoading {
                         ProgressView()
@@ -129,7 +153,7 @@ public struct ActivityListPage: View {
         }
         .refreshable {
             guard campusModel.loggedIn else { return }
-            await store.sync()
+            await store.refreshFirstPage()
         }
         .task {
             guard campusModel.loggedIn else {
@@ -137,13 +161,13 @@ public struct ActivityListPage: View {
                 return
             }
             if store.activities.isEmpty {
-                await store.sync()
+                await store.refreshFirstPage()
             }
             await campusModel.refreshStarScoreSummary()
         }
         .onChange(of: campusModel.loggedIn) { _, newValue in
             if newValue && store.activities.isEmpty {
-                Task { await store.sync() }
+                Task { await store.refreshFirstPage() }
             }
             if newValue {
                 Task { await campusModel.refreshStarScoreSummary() }

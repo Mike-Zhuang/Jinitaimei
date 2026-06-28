@@ -36,6 +36,26 @@ public struct CoursePage: View {
                 if store.schedules.isEmpty && examStore.scheduledExams.isEmpty && !store.isLoading && !examStore.isLoading {
                     emptyState
                 } else {
+                    if !store.terms.isEmpty {
+                        Section {
+                            Picker("学期", selection: Binding(
+                                get: { store.selectedCalendarId ?? 0 },
+                                set: { newValue in
+                                    Task {
+                                        await store.selectTerm(calendarId: newValue)
+                                        computeCurrentWeek()
+                                    }
+                                }
+                            )) {
+                                ForEach(store.terms) { term in
+                                    Text(term.fullName)
+                                        .tag(term.calendarId)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                        }
+                    }
+
                     Section {
                         Stepper(value: $selectedWeek, in: weekRange) {
                             VStack(alignment: .leading, spacing: 3) {
@@ -52,6 +72,7 @@ public struct CoursePage: View {
                     Section {
                         WeekGridView(
                             courses: store.schedules(forWeek: selectedWeek),
+                            exams: examsForSelectedWeek,
                             weekStartDate: weekStartDate(for: selectedWeek)
                         )
                         .listRowInsets(EdgeInsets())
@@ -81,6 +102,8 @@ public struct CoursePage: View {
                             Task {
                                 await store.sync()
                                 await examStore.sync()
+                                store.loadFromLocal()
+                                examStore.loadFromLocal()
                                 computeCurrentWeek()
                             }
                         } label: {
@@ -107,6 +130,7 @@ public struct CoursePage: View {
                 if let beginDate = semesterBeginDate() {
                     CourseExportSheet(
                         schedules: store.schedules,
+                        exams: currentTermScheduledExams,
                         semesterStart: beginDate
                     )
                 }
@@ -123,6 +147,8 @@ public struct CoursePage: View {
                 }
                 await store.sync()
                 await examStore.sync()
+                store.loadFromLocal()
+                examStore.loadFromLocal()
                 computeCurrentWeek()
             }
             .alert("加载失败", isPresented: $showError) {
@@ -141,16 +167,16 @@ public struct CoursePage: View {
             .onChange(of: store.schedules.count) { _, _ in
                 clampSelectedWeek()
             }
+            .onChange(of: store.selectedCalendarId) { _, _ in
+                computeCurrentWeek()
+            }
             .task {
                 computeCurrentWeek()
                 guard campusModel.loggedIn else {
                     store.clearLocalData()
                     return
                 }
-                await refreshCalendarMetadataIfNeeded()
-                if store.schedules.isEmpty {
-                    await store.sync()
-                }
+                await store.prepare()
                 if examStore.exams.isEmpty {
                     await examStore.sync()
                 }
@@ -160,10 +186,7 @@ public struct CoursePage: View {
                 computeCurrentWeek()
                 if isLogged {
                     Task {
-                        await refreshCalendarMetadataIfNeeded()
-                        if store.schedules.isEmpty {
-                            await store.sync()
-                        }
+                        await store.prepare()
                         if examStore.exams.isEmpty {
                             await examStore.sync()
                         }
@@ -188,10 +211,11 @@ public struct CoursePage: View {
             if campusModel.loggedIn {
                 Button("立即同步") {
                     Task {
-                        await store.sync()
-                        computeCurrentWeek()
-                    }
-                }
+                await store.sync()
+                store.loadFromLocal()
+                computeCurrentWeek()
+            }
+        }
                 .buttonStyle(.borderedProminent)
             } else {
                 Text("请先在设置中登录校园账户")
@@ -203,19 +227,11 @@ public struct CoursePage: View {
     }
 
     private var weekRange: ClosedRange<Int> {
-        let credStore = CredentialStore.shared
-        if let weekNumText = credStore.get(CredentialStore.Keys.tongjiCalendarWeekNum),
-           let weekNum = Int(weekNumText), weekNum > 0 {
-            return 1...weekNum
-        }
-        if let maxWeek = store.schedules.map(\.weekNumber).max(), maxWeek > 0 {
-            return 1...maxWeek
-        }
-        return 1...1
+        store.selectedWeekRange
     }
 
     private var semesterName: String? {
-        CredentialStore.shared.get(CredentialStore.Keys.tongjiCalendarSimpleName)
+        store.selectedCalendarName
     }
 
     /// 当前周按本机日期和缓存的学期开始日计算。
@@ -230,46 +246,12 @@ public struct CoursePage: View {
         selectedWeek = max(weekRange.lowerBound, min(weekRange.upperBound, week))
     }
 
-    @MainActor
-    private func refreshCalendarMetadataIfNeeded() async {
-        guard needsCalendarMetadataRefresh() else {
-            return
-        }
-        do {
-            try await CourseAPI().refreshCalendarMetadata()
-        } catch {
-            print("[Course] 校历元数据刷新失败: \(error)")
-        }
-    }
-
-    private func needsCalendarMetadataRefresh() -> Bool {
-        let credStore = CredentialStore.shared
-        guard semesterBeginDate() != nil,
-              credStore.get(CredentialStore.Keys.tongjiCalendarId)?.isEmpty == false,
-              let weekNumText = credStore.get(CredentialStore.Keys.tongjiCalendarWeekNum),
-              Int(weekNumText) != nil else {
-            return true
-        }
-        guard let endDayMs = credStore.get(CredentialStore.Keys.tongjiCalendarEndDayMs),
-              let ms = Double(endDayMs) else {
-            return false
-        }
-        return Date().timeIntervalSince1970 * 1000 > ms
-    }
-
     private func semesterBeginDate() -> Date? {
-        let credStore = CredentialStore.shared
-        guard let beginDayMs = credStore.get(CredentialStore.Keys.tongjiCalendarBeginDayMs),
-              let ms = Double(beginDayMs) else {
-            return nil
-        }
-        return Date(timeIntervalSince1970: ms / 1000.0)
+        store.selectedTermBeginDate
     }
 
     private func weekStartDate(for week: Int) -> Date? {
-        guard let beginDate = semesterBeginDate() else { return nil }
-        let calendar = Calendar(identifier: .gregorian)
-        return calendar.date(byAdding: .day, value: (week - 1) * 7, to: beginDate)
+        store.weekStartDate(for: week)
     }
 
     private var examsForSelectedWeek: [ExamScheduleItem] {
@@ -281,6 +263,13 @@ public struct CoursePage: View {
             guard let startDate = exam.startDate else { return false }
             return startDate >= weekStart && startDate < weekEnd
         }
+    }
+
+    private var currentTermScheduledExams: [ExamScheduleItem] {
+        guard let calendarId = store.selectedCalendarId else {
+            return examStore.scheduledExams
+        }
+        return examStore.scheduledExams.filter { $0.calendarId == calendarId }
     }
 
     private func clampSelectedWeek() {
@@ -307,11 +296,13 @@ private struct CourseExportSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     let schedules: [CourseSchedule]
+    let exams: [ExamScheduleItem]
     let semesterStart: Date
 
     @State private var selectedCalendar: EKCalendar?
     @State private var allKeys: [CourseExportKey] = []
     @State private var selectedKeys = Set<CourseExportKey>()
+    @State private var includeExams = true
     @State private var showCalendarChooser = false
     @State private var showPermissionDeniedAlert = false
     @State private var showExportError = false
@@ -338,6 +329,14 @@ private struct CourseExportSheet: View {
                                 .foregroundStyle(.secondary)
                         }
                         .tag(key)
+                    }
+                }
+
+                if !exams.isEmpty {
+                    Section {
+                        Toggle("同时导出本学期考试", isOn: $includeExams)
+                    } footer: {
+                        Text("只会导出已有明确日期和起止时间的考试安排。")
                     }
                 }
 
@@ -474,6 +473,15 @@ private struct CourseExportSheet: View {
                 eventStore: eventStore,
                 alarmOffsetsMinutes: selectedAlarmMinutes
             )
+            if includeExams && !exams.isEmpty {
+                try ExamCalendarExporter.export(
+                    exams: exams,
+                    selectedExamIds: Set(exams.map(\.sourceId)),
+                    to: calendar,
+                    eventStore: eventStore,
+                    alarmOffsetsMinutes: selectedAlarmMinutes
+                )
+            }
             dismiss()
         } catch {
             exportErrorMessage = error.localizedDescription

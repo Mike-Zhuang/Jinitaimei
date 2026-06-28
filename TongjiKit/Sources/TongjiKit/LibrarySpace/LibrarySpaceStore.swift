@@ -41,10 +41,17 @@ public final class LibrarySpaceStore: ObservableObject, CampusLocalStore {
         areas
             .filter { $0.libraryId == library.id || $0.libraryName == library.name }
             .sorted { lhs, rhs in
-                if lhs.floorName == rhs.floorName {
-                    return lhs.name < rhs.name
+                let lhsFloor = Self.floorOrder(in: lhs.floorName + lhs.name + lhs.mergedName, libraryName: library.name)
+                let rhsFloor = Self.floorOrder(in: rhs.floorName + rhs.name + rhs.mergedName, libraryName: library.name)
+                if lhsFloor != rhsFloor {
+                    return lhsFloor < rhsFloor
                 }
-                return lhs.floorName.localizedStandardCompare(rhs.floorName) == .orderedAscending
+                let lhsSide = Self.sideOrder(in: lhs.name + lhs.mergedName)
+                let rhsSide = Self.sideOrder(in: rhs.name + rhs.mergedName)
+                if lhsSide != rhsSide {
+                    return lhsSide < rhsSide
+                }
+                return lhs.mergedName.localizedStandardCompare(rhs.mergedName) == .orderedAscending
             }
     }
 
@@ -52,9 +59,10 @@ public final class LibrarySpaceStore: ObservableObject, CampusLocalStore {
         rooms
             .filter { $0.libraryId == library.id || $0.libraryName == library.name }
             .sorted { lhs, rhs in
-                let floorOrder = Self.compareNatural(lhs.floorName, rhs.floorName)
-                if floorOrder != .orderedSame {
-                    return floorOrder == .orderedAscending
+                let lhsMajor = Self.majorRoomNumber(in: "\(lhs.name) \(lhs.mergedName) \(lhs.floorName) \(lhs.id)")
+                let rhsMajor = Self.majorRoomNumber(in: "\(rhs.name) \(rhs.mergedName) \(rhs.floorName) \(rhs.id)")
+                if lhsMajor != rhsMajor {
+                    return lhsMajor < rhsMajor
                 }
 
                 let nameOrder = Self.compareNatural(lhs.name, rhs.name)
@@ -74,6 +82,52 @@ public final class LibrarySpaceStore: ObservableObject, CampusLocalStore {
 
     private static func compareNatural(_ lhs: String, _ rhs: String) -> ComparisonResult {
         lhs.localizedStandardCompare(rhs)
+    }
+
+    private static func floorOrder(in value: String, libraryName: String) -> Int {
+        guard libraryName.contains("四平路") else {
+            return firstNumber(in: value) ?? 999
+        }
+        if value.contains("十一楼") || value.contains("11楼") { return 11 }
+        if value.contains("十楼") || value.contains("10楼") { return 10 }
+        if value.contains("一楼") || value.contains("1楼") { return 1 }
+        if value.contains("二楼") || value.contains("2楼") { return 2 }
+        if value.contains("六楼") || value.contains("6楼") { return 6 }
+        if value.contains("七楼") || value.contains("7楼") { return 7 }
+        if value.contains("八楼") || value.contains("8楼") { return 8 }
+        if value.contains("九楼") || value.contains("9楼") { return 9 }
+        return firstNumber(in: value) ?? 999
+    }
+
+    private static func sideOrder(in value: String) -> Int {
+        if value.contains("北") { return 0 }
+        if value.contains("南") { return 1 }
+        return 2
+    }
+
+    private static func majorRoomNumber(in value: String) -> Int {
+        let allNumbers = numberRuns(in: value)
+        if let room = allNumbers.first(where: { $0 >= 600 && $0 < 1100 }) {
+            return room
+        }
+        return allNumbers.first ?? 9999
+    }
+
+    private static func numberRuns(in value: String) -> [Int] {
+        var result: [Int] = []
+        var digits = ""
+        for character in value {
+            if character.isNumber {
+                digits.append(character)
+            } else if !digits.isEmpty {
+                if let number = Int(digits) { result.append(number) }
+                digits = ""
+            }
+        }
+        if !digits.isEmpty, let number = Int(digits) {
+            result.append(number)
+        }
+        return result
     }
 
     private static func firstNumber(in value: String) -> Int? {

@@ -8,7 +8,7 @@ public final class CampusNotificationDetector {
     private let notificationManager: LocalNotificationManager
     private let preferenceStore: NotificationPreferenceStore
     private let followStore: StarActivityFollowStore
-    private let teachingKnownIdsKey = "notificationKnownTeachingNoticeIds"
+    private let teachingKnownIdsKeyPrefix = "notificationKnownTeachingNoticeIds"
     private let starSnapshotKey = "notificationStarActivitySnapshots"
     private let campusCardLowStateKey = "notificationCampusCardLowState"
 
@@ -56,6 +56,7 @@ public final class CampusNotificationDetector {
 
         let currentIds = Set(notices.map(\.id))
         guard !currentIds.isEmpty else { return }
+        guard let teachingKnownIdsKey else { return }
 
         let knownIds = Set(defaults.array(forKey: teachingKnownIdsKey) as? [Int] ?? [])
         if knownIds.isEmpty {
@@ -128,7 +129,11 @@ public final class CampusNotificationDetector {
             }
         }
 
-        saveStarSnapshots(currentSnapshots)
+        var mergedSnapshots = oldSnapshots
+        for (remoteId, snapshot) in currentSnapshots {
+            mergedSnapshots[remoteId] = snapshot
+        }
+        saveStarSnapshots(mergedSnapshots)
     }
 
     public func processCampusCardBalance(_ snapshot: CampusCardBalanceSnapshot) async {
@@ -162,9 +167,20 @@ public final class CampusNotificationDetector {
     }
 
     public func resetBaselines() {
-        defaults.removeObject(forKey: teachingKnownIdsKey)
+        if let teachingKnownIdsKey {
+            defaults.removeObject(forKey: teachingKnownIdsKey)
+        }
         defaults.removeObject(forKey: starSnapshotKey)
         defaults.removeObject(forKey: campusCardLowStateKey)
+    }
+
+    private var teachingKnownIdsKey: String? {
+        guard let uid = CredentialStore.shared.get(CredentialStore.Keys.tongjiUid)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !uid.isEmpty else {
+            return nil
+        }
+        return "\(teachingKnownIdsKeyPrefix).\(uid)"
     }
 
     private func loadStarSnapshots() -> [Int64: StarActivitySnapshot] {

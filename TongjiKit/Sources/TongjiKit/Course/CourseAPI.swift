@@ -22,6 +22,24 @@ public final class CourseAPI {
         }
     }
 
+    public func fetchTimetableRaw(calendarId: Int) async throws -> String {
+        try await withAuthRetry { [self] in
+            try await fetchTimetableRawOnce(calendarId: calendarId)
+        }
+    }
+
+    public func fetchCalendarTerms() async throws -> [SchoolCalendarTermInfo] {
+        try await withAuthRetry { [self] in
+            try await fetchCalendarTermsOnce()
+        }
+    }
+
+    public func fetchCalendarDetail(calendarId: Int) async throws -> SchoolCalendarTermInfo {
+        try await withAuthRetry { [self] in
+            try await fetchCalendarDetailOnce(calendarId: calendarId)
+        }
+    }
+
     public func refreshCalendarMetadata() async throws {
         try await withAuthRetry { [self] in
             try await refreshCalendarMetadataOnce()
@@ -31,6 +49,11 @@ public final class CourseAPI {
     // MARK: - Once 版本（不重试，专供内部 / 续期流程使用）
 
     public func fetchTimetableRawOnce() async throws -> String {
+        let calendarId = try await resolvedCalendarId()
+        return try await fetchTimetableRawOnce(calendarId: calendarId)
+    }
+
+    public func fetchTimetableRawOnce(calendarId: Int) async throws -> String {
         var studentCode = store.get(CredentialStore.Keys.tongjiStudentCode)
         if studentCode == nil || studentCode?.isEmpty == true {
             studentCode = try reEncryptStudentCode()
@@ -39,17 +62,15 @@ public final class CourseAPI {
             throw AuthError.expired("缺少 studentCode，请重新登录以获取加密参数")
         }
 
-        var calendarId = cachedCalendarIdIfUsable()
-        if calendarId == nil {
-            calendarId = try await fetchCalendarIdOnce()
-                ?? store.get(CredentialStore.Keys.tongjiCalendarId)
-        }
-
         let timestamp = Int(Date().timeIntervalSince1970 * 1000)
-        let calendarParam = (calendarId ?? "").addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
         let request = try httpClient.request(
             endpoint: .oneSystem,
-            path: "/api/electionservice/reportManagement/findStudentTimetab?calendarId=\(calendarParam)&studentCode=\(studentCode)&_t=\(timestamp)",
+            path: "/api/electionservice/reportManagement/findStudentTimetab",
+            queryItems: [
+                URLQueryItem(name: "calendarId", value: "\(calendarId)"),
+                URLQueryItem(name: "studentCode", value: studentCode),
+                URLQueryItem(name: "_t", value: "\(timestamp)")
+            ],
             timeout: 15
         )
 
@@ -63,6 +84,45 @@ public final class CourseAPI {
 
     public func refreshCalendarMetadataOnce() async throws {
         _ = try await fetchCalendarIdOnce()
+    }
+
+    public func fetchCalendarTermsOnce() async throws -> [SchoolCalendarTermInfo] {
+        let timestamp = Int(Date().timeIntervalSince1970 * 1000)
+        let request = try httpClient.request(
+            endpoint: .oneSystem,
+            path: "/api/baseresservice/schoolCalendar/list",
+            queryItems: [URLQueryItem(name: "_t", value: "\(timestamp)")],
+            headers: ["Accept": "application/json"],
+            timeout: 15
+        )
+        let data = try await httpClient.data(for: request, endpoint: .oneSystem)
+        let payload = try JSONDecoder().decode(CalendarListResponse.self, from: data)
+        guard payload.code == 200 else {
+            throw AuthError.loginFlowFailed(nonEmpty(payload.msg) ?? "校历列表获取失败")
+        }
+        return payload.data.map(\.termInfo)
+    }
+
+    public func fetchCalendarDetailOnce(calendarId: Int) async throws -> SchoolCalendarTermInfo {
+        let timestamp = Int(Date().timeIntervalSince1970 * 1000)
+        let request = try httpClient.request(
+            endpoint: .oneSystem,
+            path: "/api/baseresservice/schoolCalendar/detail",
+            queryItems: [
+                URLQueryItem(name: "id", value: "\(calendarId)"),
+                URLQueryItem(name: "_t", value: "\(timestamp)")
+            ],
+            headers: ["Accept": "application/json"],
+            timeout: 15
+        )
+        let data = try await httpClient.data(for: request, endpoint: .oneSystem)
+        let payload = try JSONDecoder().decode(CalendarDetailResponse.self, from: data)
+        guard payload.code == 200, let data = payload.data else {
+            throw AuthError.loginFlowFailed(nonEmpty(payload.msg) ?? "校历详情获取失败")
+        }
+        let info = data.termInfo
+        cacheCalendarMetadata(info)
+        return info
     }
 
     @discardableResult
@@ -92,6 +152,24 @@ public final class CourseAPI {
 
     // MARK: - 辅助
 
+    private func resolvedCalendarId() async throws -> Int {
+        if let calendarIdText = cachedCalendarIdIfUsable(), let calendarId = Int(calendarIdText) {
+            return calendarId
+        }
+        if let calendarIdText = try await fetchCalendarIdOnce(), let calendarId = Int(calendarIdText) {
+            return calendarId
+        }
+        if let calendarIdText = store.get(CredentialStore.Keys.tongjiCalendarId), let calendarId = Int(calendarIdText) {
+            return calendarId
+        }
+        let terms = try await fetchCalendarTermsOnce()
+        if let current = terms.first(where: \.currentTermFlag) ?? terms.first {
+            cacheCalendarMetadata(current)
+            return current.calendarId
+        }
+        throw AuthError.loginFlowFailed("未找到可用学期")
+    }
+
     private func cacheCalendarMetadata(_ json: String) {
         if let beginDay = JSONUtils.extractNestedField(json, path: ["data", "schoolCalendar", "beginDay"]) {
             store.set(beginDay, for: CredentialStore.Keys.tongjiCalendarBeginDayMs)
@@ -120,6 +198,18 @@ public final class CourseAPI {
         if let s = JSONUtils.extractNestedField(json, path: ["data", "schoolCalendar", "examWeekEnd"]) {
             store.set(s, for: CredentialStore.Keys.tongjiExamWeekEnd)
         }
+    }
+
+    private func cacheCalendarMetadata(_ info: SchoolCalendarTermInfo) {
+        store.set("\(info.calendarId)", for: CredentialStore.Keys.tongjiCalendarId)
+        if let beginDay = info.beginDay {
+            store.set("\(Int(beginDay.timeIntervalSince1970 * 1000))", for: CredentialStore.Keys.tongjiCalendarBeginDayMs)
+        }
+        if let endDay = info.endDay {
+            store.set("\(Int(endDay.timeIntervalSince1970 * 1000))", for: CredentialStore.Keys.tongjiCalendarEndDayMs)
+        }
+        store.set("\(info.weekNum)", for: CredentialStore.Keys.tongjiCalendarWeekNum)
+        store.set(info.fullName, for: CredentialStore.Keys.tongjiCalendarSimpleName)
     }
 
     private func cachedCalendarIdIfUsable() -> String? {
@@ -152,4 +242,80 @@ public final class CourseAPI {
         return encrypted
     }
 
+}
+
+private struct CalendarListResponse: Decodable {
+    let code: Int
+    let msg: String?
+    let data: [CalendarTermPayload]
+}
+
+private struct CalendarDetailResponse: Decodable {
+    let code: Int
+    let msg: String?
+    let data: CalendarTermPayload?
+}
+
+private struct CalendarTermPayload: Decodable {
+    let id: Int
+    let fullName: String?
+    let calendarIdI18n: String?
+    let beginDay: FlexibleMilliseconds?
+    let endDay: FlexibleMilliseconds?
+    let weekNum: FlexibleInt?
+    let currentTermFlag: Bool?
+    let nextTermFlag: Bool?
+
+    var termInfo: SchoolCalendarTermInfo {
+        SchoolCalendarTermInfo(
+            calendarId: id,
+            fullName: nonEmpty(fullName ?? calendarIdI18n) ?? "学期 \(id)",
+            beginDay: beginDay?.date,
+            endDay: endDay?.date,
+            weekNum: weekNum?.value ?? 0,
+            currentTermFlag: currentTermFlag ?? false,
+            nextTermFlag: nextTermFlag ?? false
+        )
+    }
+}
+
+private func nonEmpty(_ value: String?) -> String? {
+    guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+        return nil
+    }
+    return value
+}
+
+private struct FlexibleMilliseconds: Decodable {
+    let value: Double
+
+    var date: Date {
+        Date(timeIntervalSince1970: value / 1000.0)
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let number = try? container.decode(Double.self) {
+            value = number
+        } else if let text = try? container.decode(String.self), let number = Double(text) {
+            value = number
+        } else {
+            value = 0
+        }
+    }
+}
+
+private struct FlexibleInt: Decodable {
+    let value: Int
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let number = try? container.decode(Int.self) {
+            value = number
+        } else if let text = try? container.decode(String.self), let number = Int(text) {
+            value = number
+        } else {
+            value = 0
+        }
+    }
 }

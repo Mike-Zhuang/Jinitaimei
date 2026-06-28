@@ -19,6 +19,9 @@ public final class CourseSchedule {
     public var weekNumber: Int = 1
     /// 原始 `weekNum` 文本（用于显示，如 `"1-16单"`）。
     public var weekText: String?
+    /// 一系统校历 ID。旧缓存默认 0，加载时会归入当前学期。
+    public var calendarId: Int = 0
+    public var calendarName: String = ""
     public var semester: String = ""
     public var syncTime: Date = Date()
 
@@ -31,6 +34,8 @@ public final class CourseSchedule {
         endPeriod: Int,
         weekNumber: Int,
         weekText: String?,
+        calendarId: Int = 0,
+        calendarName: String = "",
         semester: String,
         syncTime: Date
     ) {
@@ -42,6 +47,8 @@ public final class CourseSchedule {
         self.endPeriod = endPeriod
         self.weekNumber = weekNumber
         self.weekText = weekText
+        self.calendarId = calendarId
+        self.calendarName = calendarName
         self.semester = semester
         self.syncTime = syncTime
     }

@@ -13,6 +13,7 @@ import TongjiKit
 struct WeekGridView: View {
 
     let courses: [CourseSchedule]
+    let exams: [ExamScheduleItem]
     /// 本周周一对应的真实日期；nil 时表头隐藏日期行
     let weekStartDate: Date?
 
@@ -27,6 +28,7 @@ struct WeekGridView: View {
     @ScaledMetric private var dayWidth: CGFloat = 68
 
     @State private var detailCourse: CourseSchedule?
+    @State private var detailExam: ExamScheduleItem?
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
@@ -45,10 +47,12 @@ struct WeekGridView: View {
                     )
                     CalendarEvents(
                         courses: uniqueCourses,
+                        exams: exams,
                         dx: dayWidth,
                         dy: rowHeight,
                         periodCount: periodCount,
-                        onTap: { detailCourse = $0 }
+                        onCourseTap: { detailCourse = $0 },
+                        onExamTap: { detailExam = $0 }
                     )
                 }
                 .frame(width: CGFloat(dayCount) * dayWidth, alignment: .topLeading)
@@ -58,6 +62,10 @@ struct WeekGridView: View {
         .padding(.vertical, 4)
         .sheet(item: $detailCourse) { course in
             CourseDetailSheet(course: course)
+                .presentationDetents([.medium, .large])
+        }
+        .sheet(item: $detailExam) { exam in
+            CoursePageExamDetailSheet(exam: exam)
                 .presentationDetents([.medium, .large])
         }
     }
@@ -155,10 +163,12 @@ private struct DateHeader: View {
 
 private struct CalendarEvents: View {
     let courses: [CourseSchedule]
+    let exams: [ExamScheduleItem]
     let dx: CGFloat
     let dy: CGFloat
     let periodCount: Int
-    let onTap: (CourseSchedule) -> Void
+    let onCourseTap: (CourseSchedule) -> Void
+    let onExamTap: (ExamScheduleItem) -> Void
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -167,16 +177,70 @@ private struct CalendarEvents: View {
             ForEach(courses, id: \.persistentModelID) { course in
                 let span = max(1, course.endPeriod - course.startPeriod + 1)
                 CourseCell(course: course, span: span, dx: dx, dy: dy) {
-                    onTap(course)
+                    onCourseTap(course)
                 }
                 .offset(
                     x: CGFloat(course.dayOfWeek - 1) * dx,
                     y: CGFloat(course.startPeriod - 1) * dy
                 )
             }
+
+            ForEach(exams, id: \.persistentModelID) { exam in
+                if let placement = placement(for: exam) {
+                    ExamCell(exam: exam, span: placement.span, dx: dx, dy: dy) {
+                        onExamTap(exam)
+                    }
+                    .offset(
+                        x: CGFloat(placement.dayOfWeek - 1) * dx,
+                        y: CGFloat(placement.startPeriod - 1) * dy
+                    )
+                }
+            }
         }
         .frame(width: CGFloat(7) * dx, height: CGFloat(periodCount) * dy, alignment: .topLeading)
     }
+
+    private func placement(for exam: ExamScheduleItem) -> ExamGridPlacement? {
+        guard let start = exam.startDate, let end = exam.endDate else { return nil }
+        let calendar = Calendar(identifier: .gregorian)
+        let weekday = calendar.component(.weekday, from: start)
+        let dayOfWeek = weekday == 1 ? 7 : weekday - 1
+        let startMinute = calendar.component(.hour, from: start) * 60 + calendar.component(.minute, from: start)
+        let endMinute = calendar.component(.hour, from: end) * 60 + calendar.component(.minute, from: end)
+        let startPeriod = nearestStartPeriod(for: startMinute)
+        let endPeriod = max(startPeriod, nearestEndPeriod(for: endMinute))
+        return ExamGridPlacement(dayOfWeek: dayOfWeek, startPeriod: startPeriod, span: max(1, endPeriod - startPeriod + 1))
+    }
+
+    private func nearestStartPeriod(for minute: Int) -> Int {
+        for slot in TongjiTimeSlot.list {
+            if let slotEnd = minutes(slot.end), minute <= slotEnd {
+                return slot.id
+            }
+        }
+        return TongjiTimeSlot.list.last?.id ?? 1
+    }
+
+    private func nearestEndPeriod(for minute: Int) -> Int {
+        for slot in TongjiTimeSlot.list.reversed() {
+            if let slotStart = minutes(slot.start), minute >= slotStart {
+                return slot.id
+            }
+        }
+        return TongjiTimeSlot.list.first?.id ?? 1
+    }
+
+    private func minutes(_ text: String) -> Int? {
+        let parts = text.split(separator: ":")
+        guard parts.count == 2, let hour = Int(parts[0]), let minute = Int(parts[1]) else { return nil }
+        return hour * 60 + minute
+    }
+}
+
+private struct ExamGridPlacement {
+    let dayOfWeek: Int
+    let startPeriod: Int
+    let span: Int
 }
 
 // MARK: - 单个课程块
@@ -222,6 +286,43 @@ private struct CourseCell: View {
                 Rectangle()
                     .frame(width: 3)
                     .foregroundColor(color),
+                alignment: .leading
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct ExamCell: View {
+    let exam: ExamScheduleItem
+    let span: Int
+    let dx: CGFloat
+    let dy: CGFloat
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(exam.courseName)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.indigo)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 4)
+                Text(exam.displayLocation)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.indigo.opacity(0.85))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .padding(.leading, 6)
+            .padding(.trailing, 3)
+            .frame(width: dx, height: CGFloat(span) * dy, alignment: .topLeading)
+            .background(Color.indigo.opacity(0.16))
+            .overlay(
+                Rectangle()
+                    .frame(width: 3)
+                    .foregroundColor(.indigo),
                 alignment: .leading
             )
             .clipShape(RoundedRectangle(cornerRadius: 6))

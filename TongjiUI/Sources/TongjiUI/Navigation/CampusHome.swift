@@ -122,6 +122,10 @@ public struct CampusHome: View {
         await examStore.sync()
         await gradeStore.sync()
         await libraryStore.sync(force: true)
+        yikatongStore.loadFromLocal()
+        examStore.loadFromLocal()
+        gradeStore.loadFromLocal()
+        libraryStore.loadFromLocal()
 
         refreshToken = UUID()
     }
@@ -529,6 +533,7 @@ private struct CampusCardPinnedCard: View {
             Task {
                 await prepareStoreIfNeeded()
                 await storeHolder.store?.sync(force: true)
+                storeHolder.store?.loadFromLocal()
             }
         }
         .onChange(of: campusModel.loggedIn) { _, loggedIn in
@@ -627,6 +632,7 @@ private struct ExamSchedulePinnedCard: View {
             Task {
                 await prepareStoreIfNeeded()
                 await storeHolder.store?.sync()
+                storeHolder.store?.loadFromLocal()
             }
         }
         .onChange(of: campusModel.loggedIn) { _, loggedIn in
@@ -704,6 +710,7 @@ private struct GradeReportPinnedCard: View {
             Task {
                 await prepareStoreIfNeeded()
                 await storeHolder.store?.sync()
+                storeHolder.store?.loadFromLocal()
             }
         }
         .onChange(of: campusModel.loggedIn) { _, loggedIn in
@@ -791,6 +798,7 @@ private struct LibrarySpacePinnedCard: View {
             Task {
                 await prepareStoreIfNeeded()
                 await storeHolder.store?.sync(force: true)
+                storeHolder.store?.loadFromLocal()
             }
         }
         .onChange(of: campusModel.loggedIn) { _, loggedIn in

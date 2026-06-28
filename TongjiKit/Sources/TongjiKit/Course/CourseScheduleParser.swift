@@ -6,7 +6,12 @@ import Foundation
 /// 输出：按"周-天-节次"展开后的 `CourseSchedule` 列表（已去重）。
 public enum CourseScheduleParser {
 
-    public static func parse(rawJSON: String, now: Date = Date()) throws -> [CourseSchedule] {
+    public static func parse(
+        rawJSON: String,
+        calendarId: Int = 0,
+        calendarName: String? = nil,
+        now: Date = Date()
+    ) throws -> [CourseSchedule] {
         guard let data = rawJSON.data(using: .utf8),
               let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let array = root["data"] as? [[String: Any]] else {
@@ -18,7 +23,7 @@ public enum CourseScheduleParser {
 
         for item in array {
             guard let courseName = string(item, "courseName"), !courseName.isEmpty else { continue }
-            let semester = string(item, "xnxqmc") ?? currentSemester(for: now)
+            let semester = calendarName ?? string(item, "xnxqmc") ?? currentSemester(for: now)
             let itemTeacher = normalizeTeacher(string(item, "teacherName"))
             let itemLocation = firstNonEmpty([
                 string(item, "classRoomI18n"),
@@ -60,10 +65,12 @@ public enum CourseScheduleParser {
                         endPeriod: endPeriod,
                         weekNumber: week,
                         weekText: weekNumText,
+                        calendarId: calendarId,
+                        calendarName: calendarName ?? semester,
                         semester: semester,
                         syncTime: now
                     )
-                    let key = "\(course.courseName)|\(course.dayOfWeek)|\(course.startPeriod)|\(course.endPeriod)|\(course.weekNumber)|\(course.location)|\(course.teacher)|\(course.semester)"
+                    let key = "\(course.calendarId)|\(course.courseName)|\(course.dayOfWeek)|\(course.startPeriod)|\(course.endPeriod)|\(course.weekNumber)|\(course.location)|\(course.teacher)|\(course.semester)"
                     if dedup.insert(key).inserted {
                         result.append(course)
                     }

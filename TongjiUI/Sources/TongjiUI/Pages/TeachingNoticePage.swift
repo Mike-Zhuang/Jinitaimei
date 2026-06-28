@@ -385,23 +385,32 @@ private struct TeachingNoticeDetailPage: View {
         body {
             /* 上下留白交给外层 SwiftUI 间距，避免与头部/附件区重复留白。 */
             margin: 0 18px;
+            min-width: 100%;
             color: #111111;
             font: -apple-system-body;
             line-height: 1.55;
             word-break: break-word;
             overflow-wrap: anywhere;
+            overflow-x: auto;
         }
         @media (prefers-color-scheme: dark) {
             body {
                 color: #F2F2F7;
             }
         }
-        img, table {
-            max-width: 100%;
+        img {
             height: auto;
+        }
+        table, pre, img {
+            max-width: none;
         }
         table {
             border-collapse: collapse;
+            width: max-content;
+        }
+        pre {
+            white-space: pre;
+            overflow-x: auto;
         }
         a {
             color: #0A84FF;
@@ -597,9 +606,13 @@ private struct TeachingNoticeHTMLView: UIViewRepresentable {
         webView.isOpaque = false
         webView.backgroundColor = .systemBackground
         webView.scrollView.backgroundColor = .systemBackground
-        // 关闭内部滚动：高度由内容决定，滚动交给外层 SwiftUI ScrollView。
-        webView.scrollView.isScrollEnabled = false
+        // WebView 允许横向滚动以容纳宽表格；纵向高度仍由 contentSize 回传给外层 ScrollView。
+        webView.scrollView.isScrollEnabled = true
+        webView.scrollView.alwaysBounceVertical = false
+        webView.scrollView.alwaysBounceHorizontal = true
+        webView.scrollView.showsVerticalScrollIndicator = false
         webView.scrollView.bounces = false
+        webView.scrollView.isDirectionalLockEnabled = true
         context.coordinator.observeContentSize(of: webView)
         return webView
     }

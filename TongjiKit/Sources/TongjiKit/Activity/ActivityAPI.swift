@@ -11,7 +11,7 @@ import Foundation
 public final class ActivityAPI {
 
     private let apiBase = URL(string: "https://star.tongji.edu.cn")!
-    private let pageSize = 10
+    private let defaultPageSize = 20
     private let store: CredentialStore
     private let session: URLSession
 
@@ -26,6 +26,18 @@ public final class ActivityAPI {
         }
     }
 
+    public func fetchAllActivitiesRaw(maxPages: Int) async throws -> [String] {
+        try await withStarAuthRetry { [self] in
+            try await fetchAllActivitiesRawOnce(maxPages: maxPages)
+        }
+    }
+
+    public func fetchActivitiesPage(pageNo: Int, pageSize: Int = 20) async throws -> ActivityPageRaw {
+        try await withStarAuthRetry { [self] in
+            try await fetchActivitiesPageOnce(pageNo: pageNo, pageSize: pageSize)
+        }
+    }
+
     public func fetchStarScoreSummary() async throws -> StarScoreSummary {
         try await withStarAuthRetry { [self] in
             try await fetchStarScoreSummaryOnce()
@@ -35,50 +47,68 @@ public final class ActivityAPI {
     // MARK: - Once 版本
 
     public func fetchAllActivitiesRawOnce() async throws -> [String] {
-        let token = validTokenOrNil()
+        try await fetchAllActivitiesRawOnce(maxPages: nil)
+    }
 
+    public func fetchAllActivitiesRawOnce(maxPages: Int?) async throws -> [String] {
         var all: [String] = []
         var pageNo = 1
         while true {
-            let url = URL(string:
-                "\(apiBase.absoluteString)/api/app-api/activity/index/list" +
-                "?pageNo=\(pageNo)&pageSize=\(pageSize)&recommend=1"
-            )!
-            var request = URLRequest(url: url)
-            applyAuthHeaders(&request, token: token)
-
-            let (data, response) = try await session.data(for: request)
-            try ensureAuth(response: response)
-
-            guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                break
-            }
-
-            if let code = (dict["code"] as? Int) ?? (dict["code"] as? NSNumber)?.intValue {
-                if code == 401 || code == 403 {
-                    throw AuthError.expired("STAR 平台凭证已失效")
-                }
-                if code != 0 { break }
-            }
-
-            guard let dataObj = dict["data"] as? [String: Any],
-                  let list = dataObj["list"] as? [[String: Any]] else {
-                break
-            }
-
-            let chunk: [String] = list.compactMap { item in
-                if let d = try? JSONSerialization.data(withJSONObject: item),
-                   let s = String(data: d, encoding: .utf8) {
-                    return s
-                }
-                return nil
-            }
-            all.append(contentsOf: chunk)
-
-            if chunk.count < pageSize { break }
+            let page = try await fetchActivitiesPageOnce(pageNo: pageNo, pageSize: defaultPageSize)
+            all.append(contentsOf: page.items)
+            if !page.hasMore { break }
+            if let maxPages, pageNo >= maxPages { break }
             pageNo += 1
         }
         return all
+    }
+
+    public func fetchActivitiesPageOnce(pageNo: Int, pageSize: Int = 20) async throws -> ActivityPageRaw {
+        let token = validTokenOrNil()
+
+        let normalizedPageNo = max(1, pageNo)
+        let normalizedPageSize = max(1, pageSize)
+        let url = URL(string:
+            "\(apiBase.absoluteString)/api/app-api/activity/index/list" +
+            "?pageNo=\(normalizedPageNo)&pageSize=\(normalizedPageSize)&recommend=1"
+        )!
+        var request = URLRequest(url: url)
+        applyAuthHeaders(&request, token: token)
+
+        let (data, response) = try await session.data(for: request)
+        try ensureAuth(response: response)
+
+        guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return ActivityPageRaw(pageNo: normalizedPageNo, pageSize: normalizedPageSize, items: [], hasMore: false)
+        }
+
+        if let code = (dict["code"] as? Int) ?? (dict["code"] as? NSNumber)?.intValue {
+            if code == 401 || code == 403 {
+                throw AuthError.expired("STAR 平台凭证已失效")
+            }
+            if code != 0 {
+                return ActivityPageRaw(pageNo: normalizedPageNo, pageSize: normalizedPageSize, items: [], hasMore: false)
+            }
+        }
+
+        guard let dataObj = dict["data"] as? [String: Any],
+              let list = dataObj["list"] as? [[String: Any]] else {
+            return ActivityPageRaw(pageNo: normalizedPageNo, pageSize: normalizedPageSize, items: [], hasMore: false)
+        }
+
+        let chunk: [String] = list.compactMap { item in
+            if let d = try? JSONSerialization.data(withJSONObject: item),
+               let s = String(data: d, encoding: .utf8) {
+                return s
+            }
+            return nil
+        }
+        return ActivityPageRaw(
+            pageNo: normalizedPageNo,
+            pageSize: normalizedPageSize,
+            items: chunk,
+            hasMore: chunk.count >= normalizedPageSize
+        )
     }
 
     public func fetchStarScoreSummaryOnce() async throws -> StarScoreSummary {
@@ -154,6 +184,13 @@ public final class ActivityAPI {
             throw AuthError.loginFlowFailed("HTTP \(http.statusCode)")
         }
     }
+}
+
+public struct ActivityPageRaw: Sendable {
+    public let pageNo: Int
+    public let pageSize: Int
+    public let items: [String]
+    public let hasMore: Bool
 }
 
 private struct StarScoreResponse: Decodable {

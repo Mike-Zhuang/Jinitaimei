@@ -1,3 +1,4 @@
+import Foundation
 import SwiftData
 import SwiftUI
 import TongjiKit
@@ -7,6 +8,9 @@ public struct LibrarySpacePage: View {
     @StateObject private var store: LibrarySpaceStore
     @State private var selectedLibrary: LibrarySpaceLibrary?
     @State private var selectedTab: LibrarySpaceTab = .seats
+    @State private var overviewSingleSeatOnly = false
+    @State private var singleSeatStats: [String: SingleSeatAreaStats] = [:]
+    @State private var isScanningSingleSeat = false
 
     public init(modelContext: ModelContext) {
         _store = StateObject(wrappedValue: LibrarySpaceStore(modelContext: modelContext))
@@ -149,21 +153,48 @@ public struct LibrarySpacePage: View {
             ContentUnavailableView("暂无座位区域", systemImage: "square.grid.3x3")
                 .listEmptyRowStyle()
         } else {
-            Section("座位区域") {
-                ForEach(groupAreasByFloor(areas), id: \.floor) { group in
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text(group.floor)
-                            .font(.headline)
-                        ForEach(group.areas) { area in
+            Section("筛选") {
+                Toggle("只看单人单座", isOn: $overviewSingleSeatOnly)
+                if overviewSingleSeatOnly && isScanningSingleSeat {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("正在识别各区域单人单座")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .task(id: "\(library.id)-\(overviewSingleSeatOnly)-\(areas.count)") {
+                await scanSingleSeatStatsIfNeeded(areas: areas)
+            }
+
+            let visibleAreas = visibleSeatAreas(areas)
+            if visibleAreas.isEmpty {
+                ContentUnavailableView("没有单人单座区域", systemImage: "chair")
+                    .listEmptyRowStyle()
+            } else {
+                ForEach(groupAreasByFloor(visibleAreas), id: \.floor) { group in
+                    Section(group.floor) {
+                        ForEach(group.areas, id: \.navigationIdentity) { area in
                             NavigationLink {
-                                LibrarySeatAreaPage(area: area)
+                                LibrarySeatAreaPage(
+                                    area: area,
+                                    initialSingleSeatOnly: overviewSingleSeatOnly
+                                )
+                                    .id(area.navigationIdentity)
                             } label: {
-                                LibraryAreaRow(area: area)
+                                LibraryAreaRow(
+                                    area: area,
+                                    singleSeatStats: singleSeatStats[area.navigationIdentity],
+                                    isSingleSeatScanning: overviewSingleSeatOnly &&
+                                        LibrarySeatLocalTagger.areaMayContainSingleSeat(area) &&
+                                        singleSeatStats[area.navigationIdentity] == nil
+                                )
                             }
                             .tint(.primary)
                         }
                     }
-                    .padding(.vertical, 4)
                 }
             }
         }
@@ -196,10 +227,67 @@ public struct LibrarySpacePage: View {
     }
 
     private func groupAreasByFloor(_ areas: [LibrarySpaceArea]) -> [(floor: String, areas: [LibrarySpaceArea])] {
-        let grouped = Dictionary(grouping: areas, by: \.floorName)
-        return grouped
-            .map { (floor: $0.key.isEmpty ? "区域" : $0.key, areas: $0.value.sorted { $0.name < $1.name }) }
-            .sorted { $0.floor.localizedStandardCompare($1.floor) == .orderedAscending }
+        var result: [(floor: String, areas: [LibrarySpaceArea])] = []
+        for area in areas {
+            let floor = area.floorName.isEmpty ? "区域" : area.floorName
+            if let index = result.firstIndex(where: { $0.floor == floor }) {
+                result[index].areas.append(area)
+            } else {
+                result.append((floor: floor, areas: [area]))
+            }
+        }
+        return result
+    }
+
+    private func visibleSeatAreas(_ areas: [LibrarySpaceArea]) -> [LibrarySpaceArea] {
+        guard overviewSingleSeatOnly else { return areas }
+        return areas.filter { area in
+            guard LibrarySeatLocalTagger.areaMayContainSingleSeat(area) else { return false }
+            guard let stats = singleSeatStats[area.navigationIdentity] else {
+                return true
+            }
+            return stats.total > 0
+        }
+    }
+
+    @MainActor
+    private func scanSingleSeatStatsIfNeeded(areas: [LibrarySpaceArea]) async {
+        guard overviewSingleSeatOnly else { return }
+        let candidates = areas.filter(LibrarySeatLocalTagger.areaMayContainSingleSeat)
+        let missing = candidates.filter { singleSeatStats[$0.navigationIdentity] == nil }
+        guard !missing.isEmpty else { return }
+
+        isScanningSingleSeat = true
+        defer { isScanningSingleSeat = false }
+
+        var index = 0
+        while index < missing.count {
+            let batch = Array(missing[index..<min(index + 2, missing.count)])
+            await withTaskGroup(of: (String, SingleSeatAreaStats).self) { group in
+                for area in batch {
+                    group.addTask {
+                        do {
+                            let detail = try await LibrarySpaceAPI().fetchSeatAreaDetail(area: area)
+                            let singleSeats = detail.seats.filter {
+                                $0.labels.contains(LibrarySpaceConstants.localSingleSeatTag)
+                            }
+                            let stats = SingleSeatAreaStats(
+                                free: singleSeats.filter(\.isFree).count,
+                                total: singleSeats.count,
+                                failed: false
+                            )
+                            return (area.navigationIdentity, stats)
+                        } catch {
+                            return (area.navigationIdentity, SingleSeatAreaStats(free: 0, total: 0, failed: true))
+                        }
+                    }
+                }
+                for await (identity, stats) in group {
+                    singleSeatStats[identity] = stats
+                }
+            }
+            index += 2
+        }
     }
 }
 
@@ -263,6 +351,8 @@ private struct CircularOccupancyView: View {
 
 private struct LibraryAreaRow: View {
     let area: LibrarySpaceArea
+    var singleSeatStats: SingleSeatAreaStats?
+    var isSingleSeatScanning = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -273,6 +363,15 @@ private struct LibraryAreaRow: View {
                 Text("可用 \(area.freeSeats) / \(area.totalSeats)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if let singleSeatStats {
+                    Text(singleSeatStats.failed ? "单人单座识别失败" : "单人单座 可用 \(singleSeatStats.free) / \(singleSeatStats.total)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else if isSingleSeatScanning {
+                    Text("正在识别单人单座")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
             Spacer()
             ProgressView(value: area.freeRatio)
@@ -281,15 +380,26 @@ private struct LibraryAreaRow: View {
     }
 }
 
+private struct SingleSeatAreaStats: Equatable, Sendable {
+    let free: Int
+    let total: Int
+    let failed: Bool
+}
+
 private struct LibrarySeatAreaPage: View {
     let area: LibrarySpaceArea
     @State private var detail: LibrarySeatAreaDetail?
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var statusFilter: SeatStatusFilter = .all
-    @State private var selectedLabels: Set<String> = []
+    @State private var singleSeatOnly = false
 
     private let api = LibrarySpaceAPI()
+
+    init(area: LibrarySpaceArea, initialSingleSeatOnly: Bool = false) {
+        self.area = area
+        _singleSeatOnly = State(initialValue: initialSingleSeatOnly)
+    }
 
     var body: some View {
         List {
@@ -327,7 +437,7 @@ private struct LibrarySeatAreaPage: View {
             }
         }
         .listStyle(.insetGrouped)
-        .navigationTitle(area.name)
+        .navigationTitle(area.mergedName.isEmpty ? area.name : area.mergedName)
         .navigationBarTitleDisplayMode(.inline)
         .refreshable {
             await load(force: true)
@@ -347,23 +457,7 @@ private struct LibrarySeatAreaPage: View {
             }
             .pickerStyle(.segmented)
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(availableLabels(from: detail), id: \.self) { label in
-                        Button {
-                            toggleLabel(label)
-                        } label: {
-                            Text(label)
-                                .font(.caption)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .background(selectedLabels.contains(label) ? Color.blue.opacity(0.18) : Color.secondary.opacity(0.12))
-                                .clipShape(Capsule())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
+            Toggle("只看单人单座", isOn: $singleSeatOnly)
         }
     }
 
@@ -381,26 +475,10 @@ private struct LibrarySeatAreaPage: View {
         }
     }
 
-    private func availableLabels(from detail: LibrarySeatAreaDetail) -> [String] {
-        let remote = detail.labels.map(\.name)
-        let actual = Set(detail.seats.flatMap(\.labels))
-        return Array(Set(remote + Array(actual) + [LibrarySpaceConstants.localSingleSeatTag]))
-            .filter { !$0.isEmpty }
-            .sorted()
-    }
-
-    private func toggleLabel(_ label: String) {
-        if selectedLabels.contains(label) {
-            selectedLabels.remove(label)
-        } else {
-            selectedLabels.insert(label)
-        }
-    }
-
     private func filteredSeats(from seats: [LibrarySeat]) -> [LibrarySeat] {
         seats.filter { seat in
             statusFilter.matches(seat) &&
-            (selectedLabels.isEmpty || !selectedLabels.isDisjoint(with: Set(seat.labels)))
+            (!singleSeatOnly || seat.labels.contains(LibrarySpaceConstants.localSingleSeatTag))
         }
     }
 }
@@ -475,6 +553,7 @@ private struct SeatRect: View {
 private struct LibrarySeminarRoomList: View {
     let rooms: [LibrarySpaceRoom]
     @State private var selectedDay = 0
+    @State private var peopleFilter: SeminarPeopleFilter = .all
 
     var body: some View {
         VStack(spacing: 12) {
@@ -485,20 +564,110 @@ private struct LibrarySeminarRoomList: View {
             }
             .pickerStyle(.segmented)
 
-            ForEach(rooms) { room in
-                LibrarySeminarRoomRow(room: room, selectedDay: selectedDay)
-                if room.id != rooms.last?.id {
-                    Divider()
+            Picker("人数", selection: $peopleFilter) {
+                ForEach(SeminarPeopleFilter.allCases) { filter in
+                    Text(filter.title).tag(filter)
                 }
+            }
+            .pickerStyle(.menu)
+
+            ForEach(rooms) { room in
+                LibrarySeminarRoomRow(
+                    room: room,
+                    selectedDay: selectedDay,
+                    peopleFilter: peopleFilter
+                )
             }
         }
         .padding(.vertical, 4)
     }
 }
 
+private enum SeminarPeopleFilter: String, CaseIterable, Identifiable {
+    case all
+    case one
+    case two
+    case three
+    case four
+    case five
+    case sixPlus
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: "不限人数"
+        case .one: "1人"
+        case .two: "2人"
+        case .three: "3人"
+        case .four: "4人"
+        case .five: "5人"
+        case .sixPlus: "6人及以上"
+        }
+    }
+
+    func matches(_ detail: LibrarySeminarRoomDetail) -> Bool {
+        guard let selected = selectedPeople else { return true }
+        guard let range = peopleRange(detail) else {
+            return false
+        }
+        switch self {
+        case .sixPlus:
+            return range.upperBound >= 6
+        default:
+            return range.contains(selected)
+        }
+    }
+
+    private var selectedPeople: Int? {
+        switch self {
+        case .all: nil
+        case .one: 1
+        case .two: 2
+        case .three: 3
+        case .four: 4
+        case .five: 5
+        case .sixPlus: 6
+        }
+    }
+
+    private func peopleRange(_ detail: LibrarySeminarRoomDetail) -> ClosedRange<Int>? {
+        if detail.minPeople > 0, detail.maxPeople > 0 {
+            return min(detail.minPeople, detail.maxPeople)...max(detail.minPeople, detail.maxPeople)
+        }
+        if let availability = detail.availabilities.first,
+           availability.minPeople > 0,
+           availability.maxPeople > 0 {
+            return min(availability.minPeople, availability.maxPeople)...max(availability.minPeople, availability.maxPeople)
+        }
+        return Self.peopleRange(from: detail.memberCountText)
+    }
+
+    private static func peopleRange(from text: String) -> ClosedRange<Int>? {
+        let pattern = #"(\d+)\s*[-~至]\s*(\d+)\s*人?|(\d+)\s*人?"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) else {
+            return nil
+        }
+        func value(_ index: Int) -> Int? {
+            let range = match.range(at: index)
+            guard range.location != NSNotFound, let swiftRange = Range(range, in: text) else { return nil }
+            return Int(text[swiftRange])
+        }
+        if let start = value(1), let end = value(2) {
+            return min(start, end)...max(start, end)
+        }
+        if let single = value(3) {
+            return single...single
+        }
+        return nil
+    }
+}
+
 private struct LibrarySeminarRoomRow: View {
     let room: LibrarySpaceRoom
     let selectedDay: Int
+    let peopleFilter: SeminarPeopleFilter
     @State private var detail: LibrarySeminarRoomDetail?
     @State private var isLoading = false
     @State private var errorMessage: String?
@@ -506,6 +675,24 @@ private struct LibrarySeminarRoomRow: View {
     private let api = LibrarySpaceAPI()
 
     var body: some View {
+        Group {
+            if shouldShow {
+                content
+            }
+        }
+        .task {
+            await load()
+        }
+    }
+
+    private var shouldShow: Bool {
+        guard let detail else {
+            return true
+        }
+        return peopleFilter.matches(detail)
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
@@ -538,9 +725,6 @@ private struct LibrarySeminarRoomRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-        }
-        .task {
-            await load()
         }
     }
 
@@ -606,6 +790,12 @@ private extension LibrarySpaceLibrary {
             .replacingOccurrences(of: "校区图书馆", with: "")
             .replacingOccurrences(of: "图书馆", with: "")
             .replacingOccurrences(of: "校区", with: "")
+    }
+}
+
+private extension LibrarySpaceArea {
+    var navigationIdentity: String {
+        [libraryId, floorId, id, mergedName, name].joined(separator: "|")
     }
 }
 
