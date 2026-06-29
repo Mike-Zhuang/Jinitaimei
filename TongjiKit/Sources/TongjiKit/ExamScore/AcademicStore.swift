@@ -91,6 +91,7 @@ public final class ExamScheduleStore: ObservableObject, CampusLocalStore {
             }
             try context.save()
             loadFromLocal()
+            notifyDataDidChange()
         } catch let error as AuthError {
             lastError = error.errorDescription
         } catch {
@@ -108,9 +109,11 @@ public final class ExamScheduleStore: ObservableObject, CampusLocalStore {
             try context.save()
             exams = []
             lastError = nil
+            notifyDataDidChange()
         } catch {
             exams = []
             lastError = error.localizedDescription
+            notifyDataDidChange()
         }
     }
 
@@ -119,6 +122,10 @@ public final class ExamScheduleStore: ObservableObject, CampusLocalStore {
         for item in try context.fetch(descriptor) {
             context.delete(item)
         }
+    }
+
+    private func notifyDataDidChange() {
+        NotificationCenter.default.post(name: .examScheduleDataDidChange, object: nil)
     }
 }
 
@@ -226,6 +233,7 @@ public final class GradeStore: ObservableObject, CampusLocalStore {
             }
             try context.save()
             loadFromLocal()
+            notifyDataDidChange()
         } catch let error as AuthError {
             lastError = error.errorDescription
         } catch {
@@ -244,10 +252,12 @@ public final class GradeStore: ObservableObject, CampusLocalStore {
             summary = nil
             courses = []
             lastError = nil
+            notifyDataDidChange()
         } catch {
             summary = nil
             courses = []
             lastError = error.localizedDescription
+            notifyDataDidChange()
         }
     }
 
@@ -258,6 +268,10 @@ public final class GradeStore: ObservableObject, CampusLocalStore {
         for course in try context.fetch(FetchDescriptor<GradeCourseRecord>()) {
             context.delete(course)
         }
+    }
+
+    private func notifyDataDidChange() {
+        NotificationCenter.default.post(name: .gradeReportDataDidChange, object: nil)
     }
 }
 

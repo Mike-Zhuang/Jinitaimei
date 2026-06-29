@@ -15,6 +15,7 @@
 | 校园 | 考试安排（考试/考察列表、置顶卡片、导出到系统日历、同步到 App 日程） | 一系统 `1.tongji.edu.cn` `undergraduateExamQuery` | v0.1 可用 |
 | 校园 | 课程成绩（总绩点、学分、不及格统计、分学期成绩、课程详情） | 一系统 `1.tongji.edu.cn` `scoreGrades` + `queryCourseTag` | v0.1 可用 |
 | 校园 | 图书馆座位（四个重点馆座位占用概览、区域座位图、研习室三天空闲时段、单人单座本地标签） | 图书馆空间系统 `space.tongji.edu.cn` | v0.1 可用 |
+| 校园 | 智能控水（分组、控水器空闲 / 使用中 / 异常只读状态、置顶摘要） | 智能控水 `ks.tongji.edu.cn` + 校园卡 `pay-yikatong.tongji.edu.cn` | v0.1 可用 |
 | 设置 | 校园账户登录、账户信息、退出登录、自动登录开关、邮件推送与低余额阈值 | 同济统一身份认证 + 一系统 session 用户信息 | v0.1 可用 |
 
 登录方式：**仅同济统一身份认证（iam/ids.tongji.edu.cn）**。用户从 `设置 → 校园账户` 进入登录页，在 WebView 内完成一次 SSO 后，App 会在同一个 WebView 内于遮罩下后台抓取凭证（Cookie + sessionid + AES 加密 studentCode）。STAR 平台的活动列表为公开接口，无需额外登录；个人星值用独立的 Bearer Token，由 `StarAuthCoordinator` 单独维护。
@@ -88,6 +89,27 @@ SSO 预热：登录成功或回前台发现 `all.tongji.edu.cn` Cookie 不完整
 
 研习室展示今天、明天、后天三天的空闲时段时间轴，并显示人数限制；东区图书馆若接口暂无研习室数据，会显示空状态。
 
+### 智能控水
+
+智能控水功能只读展示，不提交开关水、预约、锁定或控制请求。首版展示：
+
+- 分组列表
+- 每组控水器空闲 / 使用中 / 离线 / 报警状态
+- 校园首页置顶摘要
+- 本地缓存与按需刷新
+
+鉴权链路复用校园卡 `synjones-auth`：App 先通过校园卡登录态进入 `pay-yikatong.tongji.edu.cn` 的水控跳转入口，再到 `ks.tongji.edu.cn` 页面提取 `sessionStorage.ano`、前端 JS 中的 AES key 和接口 password。水控参数、Cookie 只写入 Keychain，日志只输出来源、长度、状态和 Cookie 名称，不输出 token、Cookie、AES key、password 或完整一卡通号。
+
+水控 API 位于：
+
+```text
+GET https://ks.tongji.edu.cn/waterapi/api/UseHzWatch
+GET https://ks.tongji.edu.cn/waterapi/api/GetToken?info=...
+GET https://ks.tongji.edu.cn/waterapi/api/AccUseHzWatch?info=...&token=...
+```
+
+`info` 使用与 Android 下游一致的 `AES/ECB/PKCS7` 加密；分组页先拉分组，展开某个分组时才懒加载该组控水器，避免一次性请求所有设备。
+
 更多协议与行为约定见 [docs/PROTOCOLS.md](docs/PROTOCOLS.md) 和 [docs/FEATURE-BEHAVIOR.md](docs/FEATURE-BEHAVIOR.md)。
 
 ## 暂未实现 / 不计划在 v0.1 实现
@@ -113,6 +135,7 @@ Jinitaimei/
 │       ├── TeachingNotice/    # 一系统通知公告 API + 模型
 │       ├── Wallet/            # 校园卡余额与消费记录 API / 登录续期 / SwiftData 快照
 │       ├── LibrarySpace/      # 图书馆空间系统 API / JWT 续期 / 座位与研习室模型 / SwiftData 概览缓存
+│       ├── WaterControl/      # 智能控水 API / AES-ECB 加密 / 参数提取 / SwiftData 快照
 │       ├── Notification/      # 本地通知、偏好与变化检测
 │       ├── Push/              # 邮件推送订阅 API
 │       ├── Profile/           # 一系统 session 用户信息
@@ -122,7 +145,7 @@ Jinitaimei/
     └── Sources/TongjiUI/
         ├── Navigation/        # RootView（TabBar + 隐藏续期 WebView + scenePhase 节流检查） / CampusHome
         ├── Components/        # AuthStateBanner（renewing / requiresInteractiveLogin 非阻塞 banner）
-        ├── Pages/             # LoginPage / AutoLoginSettingsView / ActivityListPage / TeachingNoticePage / CampusCardPage / ExamSchedulePage / GradeReportPage / LibrarySpacePage / SettingsPage
+        ├── Pages/             # LoginPage / AutoLoginSettingsView / ActivityListPage / TeachingNoticePage / CampusCardPage / ExamSchedulePage / GradeReportPage / LibrarySpacePage / WaterControlPage / SettingsPage
         └── Calendar/          # CoursePage（周课表 + 本周考试）
 ```
 

@@ -50,8 +50,28 @@ public func withLibrarySpaceAuthRetry<T: Sendable>(
     }
 }
 
+/// 智能控水专用重试 wrapper。
+/// 水控依赖一卡通 `synjones-auth` 派生出的 KS 登录态和独立 AES 参数；
+/// 失效时只重跑水控鉴权，不污染一系统 / STAR / 图书馆状态。
+public func withWaterControlAuthRetry<T: Sendable>(
+    _ body: @Sendable () async throws -> T
+) async throws -> T {
+    do {
+        return try await body()
+    } catch let error as AuthError where error.isExpired || error.isMissingWaterControlParams {
+        let renewed = await WaterAuthCoordinator.shared.renewIfPossible(force: true)
+        guard renewed else { throw error }
+        return try await body()
+    }
+}
+
 private extension AuthError {
     var isMissingLibraryToken: Bool {
+        if case .notLoggedIn = self { return true }
+        return false
+    }
+
+    var isMissingWaterControlParams: Bool {
         if case .notLoggedIn = self { return true }
         return false
     }

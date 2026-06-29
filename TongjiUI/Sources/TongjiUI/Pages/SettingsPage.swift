@@ -543,6 +543,7 @@ private struct AccountSheet: View {
                             ExamScheduleStore(modelContext: modelContext).clearLocalData()
                             GradeStore(modelContext: modelContext).clearLocalData()
                             LibrarySpaceStore(modelContext: modelContext).clearLocalData()
+                            WaterControlStore(modelContext: modelContext).clearLocalData()
                             campusModel.logout()
                             dismiss()
                         } label: {

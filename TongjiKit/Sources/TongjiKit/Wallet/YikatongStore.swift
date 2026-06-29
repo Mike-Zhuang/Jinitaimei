@@ -82,10 +82,12 @@ public final class YikatongStore: ObservableObject, CampusLocalStore {
             snapshots = []
             transactions = []
             lastError = nil
+            notifyDataDidChange()
         } catch {
             snapshots = []
             transactions = []
             lastError = error.localizedDescription
+            notifyDataDidChange()
         }
     }
 
@@ -135,6 +137,7 @@ public final class YikatongStore: ObservableObject, CampusLocalStore {
 
             Self.lastSuccessfulQuickSync = Date()
             loadFromLocal()
+            notifyDataDidChange()
             if let latestSnapshot {
                 await CampusNotificationDetector.shared.processCampusCardBalance(latestSnapshot)
             }
@@ -244,5 +247,9 @@ public final class YikatongStore: ObservableObject, CampusLocalStore {
     private func log(_ message: String) {
         logger.debug("\(message, privacy: .public)")
         print("[YikatongStore] \(message)")
+    }
+
+    private func notifyDataDidChange() {
+        NotificationCenter.default.post(name: .campusCardDataDidChange, object: nil)
     }
 }

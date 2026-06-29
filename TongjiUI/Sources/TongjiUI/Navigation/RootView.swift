@@ -51,6 +51,11 @@ public struct RootView: View {
                 .frame(width: 0, height: 0)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
+
+            HiddenWebViewHost(webView: WaterAuthCoordinator.shared.webView)
+                .frame(width: 0, height: 0)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
         }
         .task {
             campusModel.refresh()

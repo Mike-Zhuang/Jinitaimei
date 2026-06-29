@@ -183,7 +183,123 @@ fileLacation
 
 交易时间解析要兼容秒时间戳、毫秒时间戳和常见日期字符串；解析失败的记录不得伪造为公元 1 年日期。
 
-## 7. STAR 卓越星
+## 7. 智能控水
+
+智能控水业务位于 `TongjiKit/Sources/TongjiKit/WaterControl/`。首版只读展示控水器状态，不提交开关水、预约、锁定、解锁或其他控制请求。
+
+基础域名：
+
+```text
+https://ks.tongji.edu.cn
+```
+
+### 7.1 鉴权与参数来源
+
+智能控水依赖校园卡系统的一卡通登录态。客户端流程：
+
+1. 优先复用本地校园卡 `synjones-auth`
+2. 若缺失，则触发 `YikatongAuthCoordinator` 续期
+3. 通过 `pay-yikatong.tongji.edu.cn` 水控跳转入口进入 `ks.tongji.edu.cn`
+4. 从 KS 页面提取：
+   - `sessionStorage.ano` / `localStorage.ano`：一卡通账号
+   - 前端 JS 中的 AES key
+   - 前端 JS 中的接口 password
+5. 参数写入 Keychain：
+   - `water_control_account`
+   - `water_control_aes_key`
+   - `water_control_password`
+   - `water_control_cookies`
+
+若 JS 中无法提取 AES key 或 password，可使用当前 Android 下游验证过的 fallback 值；日志必须标注来源为 `js` 或 `fallback`，不得输出值本身。
+
+日志只允许输出：
+
+- 参数是否存在
+- 长度
+- 来源
+- Cookie 名称
+- HTTP 状态与业务码
+
+日志不得输出 `synjones-auth`、Cookie、AES key、password、完整一卡通号或完整 URL 中的敏感 query 参数。
+
+### 7.2 加密
+
+水控接口的 `info` 参数使用与 Android 下游一致的：
+
+```text
+AES/ECB/PKCS7
+```
+
+加密前 JSON 字段保持原协议命名。
+
+获取 token：
+
+```json
+{
+  "userid": "<ano>",
+  "userpassword": "<password>",
+  "time": "yyyyMMddHHmmss"
+}
+```
+
+获取某分组控水器：
+
+```json
+{
+  "ano": "<ano>",
+  "groupid": "<groupId>"
+}
+```
+
+### 7.3 接口
+
+分组列表：
+
+```text
+GET /waterapi/api/UseHzWatch
+```
+
+获取水控 token：
+
+```text
+GET /waterapi/api/GetToken?info=...
+```
+
+获取某分组控水器：
+
+```text
+GET /waterapi/api/AccUseHzWatch?info=...&token=...
+```
+
+`GetToken` 返回的 token 只保存在内存中。接口返回 token 失效、未登录、业务码失败时，先清内存 token 并重新 `GetToken`；仍失败再触发水控鉴权续期并重试一次。
+
+如果水控接口返回类似 `RetNo=-38`、`RetDsp=爽约，禁止预约`，按学校水控系统的预约资格限制处理：UI 提示这是业务限制，不当作登录失效，不反复触发重新登录。
+
+### 7.4 状态映射
+
+控水器状态码按 Android 下游已验证规则展示：
+
+| code | 展示 |
+|------|------|
+| `0` | 离线 |
+| `1` | 空闲 |
+| `2` | 加锁 |
+| `3` | 报警 |
+| `4` | 使用中 |
+
+首页置顶卡和详情页 summary 统一汇总为：
+
+- 空闲：`1`
+- 使用中：`4`
+- 异常：`0 / 2 / 3` 和未知状态
+
+### 7.5 UI 与缓存
+
+分组列表先从本地 SwiftData 快照展示，再按需刷新远端。展开某个分组时才请求该组控水器，不一次性请求所有分组设备。
+
+详情页筛选只影响本地展示，不改变学校状态，也不提交任何写操作。空状态和错误态应提供“重新获取控水登录态 / 重试”，不能只展示“暂无数据”。
+
+## 8. STAR 卓越星
 
 STAR 活动列表优先使用公开接口。个人星值和需要身份的接口使用独立 Bearer Token，由 `StarAuthCoordinator` 维护。
 
@@ -193,7 +309,7 @@ STAR token 与一系统登录态解耦：
 - 一系统恢复成功后，可独立尝试 STAR 续期
 - 遇到验证码或 MFA 时不绕过，降级到用户交互
 
-## 8. 图书馆空间系统
+## 9. 图书馆空间系统
 
 图书馆座位与研习室数据来自：
 
@@ -203,7 +319,7 @@ https://space.tongji.edu.cn
 
 首版只读展示，不提交预约、取消预约或签到。
 
-### 8.1 鉴权
+### 9.1 鉴权
 
 图书馆系统使用独立 IAM 应用：
 
@@ -228,7 +344,7 @@ redirect_uri: https://space.tongji.edu.cn/api/Oauth3/login
 
 日志只允许输出 token 是否存在、长度和来源，不得输出 `cas`、JWT、Cookie、手机号、邮箱或完整学号。
 
-### 8.2 请求约定
+### 9.2 请求约定
 
 图书馆系统的 JWT 不放在 HTTP `Authorization` Header，而是放在 JSON 请求体里：
 
@@ -240,7 +356,7 @@ redirect_uri: https://space.tongji.edu.cn/api/Oauth3/login
 
 注意抓包中 `bearer` 与 token 之间没有空格。新增接口时必须保持这个格式，除非后续抓包证明学校改了协议。
 
-### 8.3 座位概览与座位图
+### 9.3 座位概览与座位图
 
 座位概览：
 
@@ -279,7 +395,7 @@ POST /api/Seat/seat
 
 `/api/Seat/seat` 返回座位坐标、尺寸、状态、标签等字段。UI 使用坐标绘制平面图，不展示几千条座位列表。
 
-### 8.4 本地标签
+### 9.4 本地标签
 
 学校标签来自：
 
@@ -296,7 +412,7 @@ POST /api/seat/label
 
 匹配依据为“图书馆名 + 楼层 / 区域名 + 座位号”。不确定区域不得误标。
 
-### 8.5 研习室
+### 9.5 研习室
 
 研习室概览同样使用：
 

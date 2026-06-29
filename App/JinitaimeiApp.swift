@@ -23,7 +23,9 @@ struct JinitaimeiApp: App {
                     GradeCourseRecord.self,
                     LibrarySpaceOverviewSnapshot.self,
                     LibrarySpaceAreaSnapshot.self,
-                    LibrarySpaceRoomSnapshot.self
+                    LibrarySpaceRoomSnapshot.self,
+                    WaterControlGroupSnapshot.self,
+                    WaterControlDeviceSnapshot.self
             )
         } catch {
             fatalError("SwiftData 初始化失败: \(error)")

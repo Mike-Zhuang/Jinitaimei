@@ -241,6 +241,7 @@ public final class LibrarySpaceStore: ObservableObject, CampusLocalStore {
 
             try context.save()
             loadFromLocal()
+            notifyDataDidChange()
         } catch let error as AuthError {
             lastError = error.errorDescription
         } catch {
@@ -275,11 +276,13 @@ public final class LibrarySpaceStore: ObservableObject, CampusLocalStore {
             lastSyncTime = nil
             lastError = nil
             LibrarySpaceAuthCoordinator.shared.clearToken()
+            notifyDataDidChange()
         } catch {
             libraries = []
             areas = []
             rooms = []
             lastError = error.localizedDescription
+            notifyDataDidChange()
         }
     }
 
@@ -293,5 +296,9 @@ public final class LibrarySpaceStore: ObservableObject, CampusLocalStore {
         for item in try context.fetch(FetchDescriptor<LibrarySpaceRoomSnapshot>()) {
             context.delete(item)
         }
+    }
+
+    private func notifyDataDidChange() {
+        NotificationCenter.default.post(name: .librarySpaceDataDidChange, object: nil)
     }
 }

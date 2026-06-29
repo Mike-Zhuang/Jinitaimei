@@ -256,5 +256,13 @@ public final class CredentialStore: @unchecked Sendable {
 
         // 图书馆空间预约系统（space.tongji.edu.cn）相关
         public static let librarySpaceBearerToken = "library_space_bearer_token"
+
+        // 智能控水（ks.tongji.edu.cn）相关
+        public static let waterControlAccount = "water_control_account"
+        public static let waterControlAesKey = "water_control_aes_key"
+        public static let waterControlPassword = "water_control_password"
+        public static let waterControlCookies = "water_control_cookies"
+        public static let waterControlApiToken = "water_control_api_token"
+        public static let waterControlApiTokenSavedAt = "water_control_api_token_saved_at"
     }
 }

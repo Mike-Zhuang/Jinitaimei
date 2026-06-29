@@ -1,4 +1,5 @@
 import Charts
+import Combine
 import SwiftUI
 import SwiftData
 import TongjiKit
@@ -115,17 +116,24 @@ public struct CampusHome: View {
         let examStore = ExamScheduleStore(modelContext: modelContext)
         let gradeStore = GradeStore(modelContext: modelContext)
         let libraryStore = LibrarySpaceStore(modelContext: modelContext)
-        let localStores: [CampusLocalStore] = [yikatongStore, examStore, gradeStore, libraryStore]
+        let waterStore = WaterControlStore(modelContext: modelContext)
+        let localStores: [CampusLocalStore] = [yikatongStore, examStore, gradeStore, libraryStore, waterStore]
         localStores.forEach { $0.clearError() }
 
         await yikatongStore.sync(force: true)
         await examStore.sync()
         await gradeStore.sync()
         await libraryStore.sync(force: true)
+        await waterStore.syncGroups(force: true)
+        if let pinnedWaterGroupId = UserDefaults.standard.string(forKey: WaterControlPreferences.pinnedGroupIdKey),
+           !pinnedWaterGroupId.isEmpty {
+            await waterStore.syncPinnedGroup(id: pinnedWaterGroupId, force: true)
+        }
         yikatongStore.loadFromLocal()
         examStore.loadFromLocal()
         gradeStore.loadFromLocal()
         libraryStore.loadFromLocal()
+        waterStore.loadFromLocal()
 
         refreshToken = UUID()
     }
@@ -138,6 +146,7 @@ private enum CampusService: String, CaseIterable, Codable, Identifiable {
     case examSchedule
     case gradeReport
     case librarySpace
+    case waterControl
 
     var id: String { rawValue }
 
@@ -156,6 +165,8 @@ private enum CampusService: String, CaseIterable, Codable, Identifiable {
             Label("课程成绩", systemImage: "graduationcap.circle")
         case .librarySpace:
             Label("图书馆座位", systemImage: "chair.lounge")
+        case .waterControl:
+            Label("智能控水", systemImage: "drop.fill")
         }
     }
 
@@ -174,6 +185,8 @@ private enum CampusService: String, CaseIterable, Codable, Identifiable {
             GradeReportPinnedCard(refreshToken: refreshToken)
         case .librarySpace:
             LibrarySpacePinnedCard(refreshToken: refreshToken)
+        case .waterControl:
+            WaterControlPinnedCard(refreshToken: refreshToken)
         }
     }
 
@@ -192,6 +205,8 @@ private enum CampusService: String, CaseIterable, Codable, Identifiable {
             GradeReportPageContainer()
         case .librarySpace:
             LibrarySpacePageContainer()
+        case .waterControl:
+            WaterControlPageContainer()
         }
     }
 }
@@ -211,7 +226,7 @@ private final class CampusHomeModel: ObservableObject {
     init() {
         let defaults = UserDefaults.standard
         self.pinnedServices = Self.load(key: pinnedKey, from: defaults) ?? []
-        self.unpinnedServices = Self.load(key: unpinnedKey, from: defaults) ?? [.starActivity, .teachingNotice, .campusCard, .examSchedule, .gradeReport, .librarySpace]
+        self.unpinnedServices = Self.load(key: unpinnedKey, from: defaults) ?? [.starActivity, .teachingNotice, .campusCard, .examSchedule, .gradeReport, .librarySpace, .waterControl]
         normalize()
     }
 
@@ -524,9 +539,15 @@ private struct CampusCardPinnedCard: View {
             }
         }
         .task {
-            await prepareStoreIfNeeded()
+            await reloadLocalStore()
             guard let store = storeHolder.store, campusModel.loggedIn, store.latestSnapshot == nil else { return }
             await store.sync()
+        }
+        .onAppear {
+            Task { await reloadLocalStore() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .campusCardDataDidChange)) { _ in
+            Task { await reloadLocalStore() }
         }
         .onChange(of: refreshToken) { _, _ in
             guard campusModel.loggedIn else { return }
@@ -548,6 +569,11 @@ private struct CampusCardPinnedCard: View {
         if storeHolder.store == nil {
             storeHolder.store = YikatongStore(modelContext: modelContext)
         }
+    }
+
+    private func reloadLocalStore() async {
+        await prepareStoreIfNeeded()
+        storeHolder.store?.loadFromLocal()
     }
 
     private func dailySpendingPoints(from transactions: [CampusCardTransaction]) -> [CampusCardMiniChartPoint] {
@@ -623,9 +649,15 @@ private struct ExamSchedulePinnedCard: View {
             }
         }
         .task {
-            await prepareStoreIfNeeded()
+            await reloadLocalStore()
             guard let store = storeHolder.store, campusModel.loggedIn, store.exams.isEmpty else { return }
             await store.sync()
+        }
+        .onAppear {
+            Task { await reloadLocalStore() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .examScheduleDataDidChange)) { _ in
+            Task { await reloadLocalStore() }
         }
         .onChange(of: refreshToken) { _, _ in
             guard campusModel.loggedIn else { return }
@@ -647,6 +679,11 @@ private struct ExamSchedulePinnedCard: View {
         if storeHolder.store == nil {
             storeHolder.store = ExamScheduleStore(modelContext: modelContext)
         }
+    }
+
+    private func reloadLocalStore() async {
+        await prepareStoreIfNeeded()
+        storeHolder.store?.loadFromLocal()
     }
 }
 
@@ -701,9 +738,15 @@ private struct GradeReportPinnedCard: View {
             }
         }
         .task {
-            await prepareStoreIfNeeded()
+            await reloadLocalStore()
             guard let store = storeHolder.store, campusModel.loggedIn, store.summary == nil else { return }
             await store.sync()
+        }
+        .onAppear {
+            Task { await reloadLocalStore() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .gradeReportDataDidChange)) { _ in
+            Task { await reloadLocalStore() }
         }
         .onChange(of: refreshToken) { _, _ in
             guard campusModel.loggedIn else { return }
@@ -725,6 +768,11 @@ private struct GradeReportPinnedCard: View {
         if storeHolder.store == nil {
             storeHolder.store = GradeStore(modelContext: modelContext)
         }
+    }
+
+    private func reloadLocalStore() async {
+        await prepareStoreIfNeeded()
+        storeHolder.store?.loadFromLocal()
     }
 
     private func clean(_ value: String) -> String {
@@ -789,9 +837,15 @@ private struct LibrarySpacePinnedCard: View {
             }
         }
         .task {
-            await prepareStoreIfNeeded()
+            await reloadLocalStore()
             guard let store = storeHolder.store, campusModel.loggedIn, store.libraries.isEmpty else { return }
             await store.sync()
+        }
+        .onAppear {
+            Task { await reloadLocalStore() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .librarySpaceDataDidChange)) { _ in
+            Task { await reloadLocalStore() }
         }
         .onChange(of: refreshToken) { _, _ in
             guard campusModel.loggedIn else { return }
@@ -813,6 +867,151 @@ private struct LibrarySpacePinnedCard: View {
         if storeHolder.store == nil {
             storeHolder.store = LibrarySpaceStore(modelContext: modelContext)
         }
+    }
+
+    private func reloadLocalStore() async {
+        await prepareStoreIfNeeded()
+        storeHolder.store?.loadFromLocal()
+    }
+}
+
+private struct WaterControlPinnedCard: View {
+    @Environment(\.modelContext) private var modelContext
+    @ObservedObject private var campusModel = CampusModel.shared
+    let refreshToken: UUID
+    @StateObject private var storeHolder = WaterControlStoreHolder()
+    @AppStorage(WaterControlPreferences.pinnedGroupIdKey) private var pinnedGroupId = ""
+
+    var body: some View {
+        PinnedServiceCardLayout(title: "智能控水", systemImage: "drop.fill", color: .cyan) {
+            if !campusModel.loggedIn {
+                Text("登录后查看控水器状态")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let store = storeHolder.store,
+                      let pinnedGroup = pinnedGroup(in: store) {
+                let devices = store.devices(for: pinnedGroup)
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Text(pinnedGroup.name)
+                            .font(.callout)
+                            .bold()
+                            .lineLimit(1)
+                        Spacer()
+                    }
+
+                    if !devices.isEmpty {
+                        Text("\(devices.filter { $0.status == .available }.count)/\(devices.count) 空闲 · 使用中 \(devices.filter { $0.status == .inUse }.count)")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    } else if store.loadingGroupIds.contains(pinnedGroup.id) {
+                        HStack(spacing: 6) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("正在同步我的宿舍")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text("下拉刷新后只同步这个宿舍")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let error = store.error(for: pinnedGroup) {
+                        Text(error)
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                            .lineLimit(1)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let store = storeHolder.store, !pinnedGroupId.isEmpty, !store.groups.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("未找到置顶宿舍")
+                        .font(.callout)
+                        .bold()
+                    Text("进入后重新选择我的宿舍")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let store = storeHolder.store, !store.groups.isEmpty {
+                Text("进入后置顶你的宿舍")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let store = storeHolder.store, store.isLoadingGroups {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("正在加载智能控水")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let store = storeHolder.store, let error = store.lastError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Text("下拉刷新后同步控水状态")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .task {
+            await reloadLocalStore()
+            guard let store = storeHolder.store, campusModel.loggedIn else { return }
+            if store.groups.isEmpty {
+                await store.syncGroups()
+            }
+            if !pinnedGroupId.isEmpty {
+                await store.syncPinnedGroup(id: pinnedGroupId)
+            }
+        }
+        .onAppear {
+            Task { await reloadLocalStore() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .waterControlDataDidChange)) { _ in
+            Task { await reloadLocalStore() }
+        }
+        .onChange(of: refreshToken) { _, _ in
+            guard campusModel.loggedIn else { return }
+            Task {
+                await prepareStoreIfNeeded()
+                await storeHolder.store?.syncGroups(force: true)
+                if !pinnedGroupId.isEmpty {
+                    await storeHolder.store?.syncPinnedGroup(id: pinnedGroupId, force: true)
+                }
+                storeHolder.store?.loadFromLocal()
+            }
+        }
+        .onChange(of: campusModel.loggedIn) { _, loggedIn in
+            guard let store = storeHolder.store else { return }
+            if !loggedIn {
+                store.clearLocalData()
+            }
+        }
+    }
+
+    private func prepareStoreIfNeeded() async {
+        if storeHolder.store == nil {
+            storeHolder.store = WaterControlStore(modelContext: modelContext)
+        }
+    }
+
+    private func reloadLocalStore() async {
+        await prepareStoreIfNeeded()
+        storeHolder.store?.loadFromLocal()
+    }
+
+    private func pinnedGroup(in store: WaterControlStore) -> WaterControlGroup? {
+        guard !pinnedGroupId.isEmpty else { return nil }
+        return store.group(id: pinnedGroupId)
     }
 }
 
@@ -906,6 +1105,13 @@ private struct LibrarySpacePageContainer: View {
     }
 }
 
+private struct WaterControlPageContainer: View {
+    @Environment(\.modelContext) private var modelContext
+    var body: some View {
+        WaterControlPage(modelContext: modelContext)
+    }
+}
+
 @MainActor
 private final class CampusCardStoreHolder: ObservableObject {
     @Published var store: YikatongStore?
@@ -924,6 +1130,11 @@ private final class GradeStoreHolder: ObservableObject {
 @MainActor
 private final class LibrarySpaceStoreHolder: ObservableObject {
     @Published var store: LibrarySpaceStore?
+}
+
+@MainActor
+private final class WaterControlStoreHolder: ObservableObject {
+    @Published var store: WaterControlStore?
 }
 
 private extension LibrarySpaceLibrary {
