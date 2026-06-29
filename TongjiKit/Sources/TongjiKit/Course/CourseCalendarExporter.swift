@@ -72,6 +72,16 @@ public enum CourseCalendarExporter {
     ) throws {
         let weeks = Array(Set(courses.map(\.weekNumber))).sorted()
         guard let firstWeek = weeks.first else { return }
+        let exportID = exportID(for: courses, key: key, weeks: weeks, semesterStart: semesterStart)
+        let expectedRanges = weeks.map { computeTime(for: key, week: $0, semesterStart: semesterStart) }
+        try CalendarExportSupport.removeExistingEvents(
+            eventStore: eventStore,
+            calendar: calendar,
+            range: searchRange(for: expectedRanges),
+            exportID: exportID
+        ) { event in
+            legacyEvent(event, matches: key, expectedRanges: expectedRanges)
+        }
 
         if let interval = recurrenceInterval(for: weeks) {
             let event = makeEvent(
@@ -79,6 +89,7 @@ public enum CourseCalendarExporter {
                 weekText: courses.first?.weekText,
                 week: firstWeek,
                 semesterStart: semesterStart,
+                exportID: exportID,
                 calendar: calendar,
                 eventStore: eventStore,
                 alarmOffsetsMinutes: alarmOffsetsMinutes
@@ -98,6 +109,7 @@ public enum CourseCalendarExporter {
                     weekText: courses.first?.weekText,
                     week: week,
                     semesterStart: semesterStart,
+                    exportID: exportID,
                     calendar: calendar,
                     eventStore: eventStore,
                     alarmOffsetsMinutes: alarmOffsetsMinutes
@@ -121,6 +133,7 @@ public enum CourseCalendarExporter {
         weekText: String?,
         week: Int,
         semesterStart: Date,
+        exportID: String,
         calendar: EKCalendar,
         eventStore: EKEventStore,
         alarmOffsetsMinutes: Set<Int>
@@ -128,18 +141,74 @@ public enum CourseCalendarExporter {
         let event = EKEvent(eventStore: eventStore)
         event.title = key.courseName
         event.location = key.location
-        event.notes = [
+        event.notes = CalendarExportSupport.notes(lines: [
             key.teacher.isEmpty ? nil : "教师：\(key.teacher)",
             weekText.map { "周次：\($0)" }
-        ]
-        .compactMap { $0 }
-        .joined(separator: "\n")
+        ], exportID: exportID)
+        event.url = CalendarExportSupport.exportURL(for: exportID)
         (event.startDate, event.endDate) = computeTime(for: key, week: week, semesterStart: semesterStart)
         event.calendar = calendar
         for minutes in alarmOffsetsMinutes.sorted() where minutes > 0 {
             event.addAlarm(EKAlarm(relativeOffset: TimeInterval(-minutes * 60)))
         }
         return event
+    }
+
+    private static func exportID(
+        for courses: [CourseSchedule],
+        key: CourseExportKey,
+        weeks: [Int],
+        semesterStart: Date
+    ) -> String {
+        let calendarId = courses.first?.calendarId ?? 0
+        return CalendarExportSupport.stableID(
+            kind: "course",
+            components: [
+                "\(calendarId)",
+                semesterDateString(semesterStart),
+                key.courseName,
+                key.teacher,
+                key.location,
+                "\(key.dayOfWeek)",
+                "\(key.startPeriod)",
+                "\(key.endPeriod)",
+                weeks.map(String.init).joined(separator: ",")
+            ]
+        )
+    }
+
+    private static func searchRange(for expectedRanges: [(Date, Date)]) -> DateInterval {
+        let starts = expectedRanges.map(\.0)
+        let ends = expectedRanges.map(\.1)
+        let start = (starts.min() ?? Date()).addingTimeInterval(-86_400)
+        let end = (ends.max() ?? start).addingTimeInterval(86_400)
+        return DateInterval(start: start, end: max(end, start.addingTimeInterval(86_400)))
+    }
+
+    private static func legacyEvent(
+        _ event: EKEvent,
+        matches key: CourseExportKey,
+        expectedRanges: [(Date, Date)]
+    ) -> Bool {
+        guard CalendarExportSupport.text(event.title, equals: key.courseName),
+              CalendarExportSupport.text(event.location, equals: key.location),
+              CalendarExportSupport.matchesTime(event, expectedRanges: expectedRanges) else {
+            return false
+        }
+
+        let notes = event.notes ?? ""
+        let teacherMatches = !key.teacher.isEmpty && notes.contains("教师：\(key.teacher)")
+        let hasOldWeekLine = notes.contains("周次：")
+        return teacherMatches || hasOldWeekLine
+    }
+
+    private static func semesterDateString(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
     }
 
     private static func computeTime(for key: CourseExportKey, week: Int, semesterStart: Date) -> (Date, Date) {

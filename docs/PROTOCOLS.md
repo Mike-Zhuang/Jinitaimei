@@ -20,7 +20,57 @@ X-Token: <sessionid>
 
 负责。业务 API 收到 `401 / 403` 时抛出 `AuthError.expired`，通过 `withAuthRetry` 触发 single-flight 续期并重试一次。业务模块不得擅自清除一系统凭证。
 
-## 2. 考试安排
+### 1.1 Cookie 双向同步与 SSO 预热
+
+一系统登录态同时存在于两类容器：
+
+- `CookieJar`：结构化保存到 Keychain，供 `URLSession` / `TongjiHTTPClient` 注入业务请求。
+- `WKHTTPCookieStore`：隐藏续期 WebView 和交互登录 WebView 使用的浏览器态。
+
+为了避免两者割裂，以下场景必须执行同步：
+
+1. 静默续期、密码回填、回前台会话检查前：把 `CookieJar` 中仍有效的同济域 Cookie 回灌到对应 `WKHTTPCookieStore`。
+2. 登录成功、静默续期成功、密码回填成功后：从 `WKHTTPCookieStore` 读取同济域 Cookie，合并回 `CookieJar`。
+3. `all.tongji.edu.cn` 预热完成后：同样把预热 WebView 中产生的同济域 Cookie 合并回 `CookieJar`。
+
+预热入口为：
+
+```text
+https://all.tongji.edu.cn/new/index.html
+```
+
+预热用于补齐同济门户域 Cookie。预热失败不得直接判定一系统登录失效，只记录脱敏诊断并保留当前登录态。
+
+### 1.2 Android 下游可借鉴点与不采纳点
+
+Android 下游项目较少掉登录的主要原因是全局持久化 CookieJar、登录后访问 `all.tongji.edu.cn` 预热 SSO Cookie、以及 Retrofit 请求统一注入 Cookie / Token。iOS 端只吸收这三个架构点。
+
+以下做法不得引入 iOS 主项目：
+
+- BODY 级网络日志。
+- Cookie、Token、`sessiondata`、学号密码明文日志。
+- 强行把所有 session cookie 改成固定 24 小时有效期。
+- 用 `uid` 或其他身份字段兜底充当 `X-Token`。
+
+## 2. 课表学期与日历导出
+
+课表学期列表来自：
+
+```text
+GET /api/baseresservice/schoolCalendar/list
+GET /api/baseresservice/schoolCalendar/detail?id=...
+```
+
+一系统会返回大量历史学期，App 只在 UI 展示与当前学生相关的范围：
+
+- 下界：学生入学学年第一学期。入学年份优先解析个人资料 `grade/currentGrade` 中的 4 位年份，缺失时用学号前两位推断。
+- 上界：远端 `nextTermFlag == true` 的学期；若无 next 标记，则使用 `currentTermFlag == true` 的学期。
+
+本地仍可保存远端原始学期缓存，但课表页 Picker 只能使用过滤后的可见学期。若用户之前选中的学期落在范围外，自动回到当前学期。
+
+课表导出使用 App 内部 Sheet 完成：选择课程、是否同时导出本学期考试、提醒、目标日历，然后点击同一页面的“导出”。不得再使用缺少明确继续动作的二级系统日历选择流程。若只有 write-only 日历权限，无法列出全部日历时，导出到系统默认日历。
+
+## 3. 考试安排
 
 考试安排位于 `TongjiKit/Sources/TongjiKit/ExamScore/`，请求顺序：
 
@@ -37,7 +87,7 @@ X-Token: <sessionid>
 - `日程 → 本周考试`
 - 系统日历导出
 
-## 3. 课程成绩
+## 4. 课程成绩
 
 课程成绩请求顺序：
 
@@ -46,7 +96,7 @@ X-Token: <sessionid>
 2. `GET /api/scoremanagementservice/studentScoreBk/queryCourseTag?studentId=...`
 3. `GET /api/scoremanagementservice/scoreGrades/getMyGrades?studentId=...`
 
-### 3.1 课程类别映射
+### 4.1 课程类别映射
 
 `getMyGrades` 的 `courseLabName` 可能包含领域名和括号编号，例如：
 
@@ -77,7 +127,7 @@ X-Token: <sessionid>
 
 不得把 `courseNature` 中的 `SJ` 等内部代码作为用户可见类别。
 
-## 4. 教务通知与附件
+## 5. 教务通知与附件
 
 通知摘要列表和详情位于一系统 `commonMsgPublish` 接口。详情响应中的：
 
@@ -104,7 +154,7 @@ fileLacation
 
 下载请求复用一系统 Cookie 与 `X-Token`。`objectkey` 由附件路径按一系统现有 AES 规则生成，并按接口要求进行 percent-encoding。下载后的文件只写入临时目录，用于 Quick Look 预览或系统分享。
 
-## 5. 校园卡
+## 6. 校园卡
 
 校园卡业务位于 `TongjiKit/Sources/TongjiKit/Wallet/`。鉴权链路与一系统登录态隔离，避免校园卡凭证失效误伤课表、通知和成绩。
 
@@ -133,7 +183,7 @@ fileLacation
 
 交易时间解析要兼容秒时间戳、毫秒时间戳和常见日期字符串；解析失败的记录不得伪造为公元 1 年日期。
 
-## 6. STAR 卓越星
+## 7. STAR 卓越星
 
 STAR 活动列表优先使用公开接口。个人星值和需要身份的接口使用独立 Bearer Token，由 `StarAuthCoordinator` 维护。
 
@@ -143,7 +193,7 @@ STAR token 与一系统登录态解耦：
 - 一系统恢复成功后，可独立尝试 STAR 续期
 - 遇到验证码或 MFA 时不绕过，降级到用户交互
 
-## 7. 图书馆空间系统
+## 8. 图书馆空间系统
 
 图书馆座位与研习室数据来自：
 
@@ -153,7 +203,7 @@ https://space.tongji.edu.cn
 
 首版只读展示，不提交预约、取消预约或签到。
 
-### 7.1 鉴权
+### 8.1 鉴权
 
 图书馆系统使用独立 IAM 应用：
 
@@ -178,7 +228,7 @@ redirect_uri: https://space.tongji.edu.cn/api/Oauth3/login
 
 日志只允许输出 token 是否存在、长度和来源，不得输出 `cas`、JWT、Cookie、手机号、邮箱或完整学号。
 
-### 7.2 请求约定
+### 8.2 请求约定
 
 图书馆系统的 JWT 不放在 HTTP `Authorization` Header，而是放在 JSON 请求体里：
 
@@ -190,7 +240,7 @@ redirect_uri: https://space.tongji.edu.cn/api/Oauth3/login
 
 注意抓包中 `bearer` 与 token 之间没有空格。新增接口时必须保持这个格式，除非后续抓包证明学校改了协议。
 
-### 7.3 座位概览与座位图
+### 8.3 座位概览与座位图
 
 座位概览：
 
@@ -229,7 +279,7 @@ POST /api/Seat/seat
 
 `/api/Seat/seat` 返回座位坐标、尺寸、状态、标签等字段。UI 使用坐标绘制平面图，不展示几千条座位列表。
 
-### 7.4 本地标签
+### 8.4 本地标签
 
 学校标签来自：
 
@@ -246,7 +296,7 @@ POST /api/seat/label
 
 匹配依据为“图书馆名 + 楼层 / 区域名 + 座位号”。不确定区域不得误标。
 
-### 7.5 研习室
+### 8.5 研习室
 
 研习室概览同样使用：
 

@@ -30,6 +30,46 @@ public struct StoredCookie: Codable, Hashable, Sendable {
         self.isSecure = isSecure
         self.isHTTPOnly = isHTTPOnly
     }
+
+    public func isExpired(now: Date = Date()) -> Bool {
+        if let expiresDate, expiresDate < now { return true }
+        return false
+    }
+
+    public func matches(host: String, path requestPath: String = "/") -> Bool {
+        let normalizedHost = host.lowercased()
+        let normalizedDomain: String = {
+            let domain = self.domain.lowercased()
+            return domain.hasPrefix(".") ? String(domain.dropFirst()) : domain
+        }()
+        let hostMatches = normalizedHost == normalizedDomain ||
+            normalizedHost.hasSuffix("." + normalizedDomain)
+        guard hostMatches else { return false }
+        let storedPath = path.isEmpty ? "/" : path
+        let path = requestPath.isEmpty ? "/" : requestPath
+        return path.hasPrefix(storedPath)
+    }
+
+    public func makeHTTPCookie() -> HTTPCookie? {
+        var properties: [HTTPCookiePropertyKey: Any] = [
+            .name: name,
+            .value: value,
+            .domain: domain,
+            .path: path.isEmpty ? "/" : path
+        ]
+        if let expiresDate {
+            properties[.expires] = expiresDate
+        }
+        if isSecure {
+            properties[.secure] = "TRUE"
+        }
+        if isHTTPOnly {
+            // `HTTPCookiePropertyKey` 没有暴露类型安全的 HttpOnly 常量，
+            // 这里保留原始属性，避免回灌到 WebView 时丢掉服务端设置语义。
+            properties[HTTPCookiePropertyKey("HttpOnly")] = "TRUE"
+        }
+        return HTTPCookie(properties: properties)
+    }
 }
 
 public final class CookieJar: @unchecked Sendable {
@@ -59,14 +99,7 @@ public final class CookieJar: @unchecked Sendable {
         let path = url.path.isEmpty ? "/" : url.path
 
         let matched = snapshot.filter { c in
-            if let exp = c.expiresDate, exp < now { return false }
-            let bareDomain: String = {
-                let d = c.domain.lowercased()
-                return d.hasPrefix(".") ? String(d.dropFirst()) : d
-            }()
-            let hostMatches = host == bareDomain || host.hasSuffix("." + bareDomain)
-            if !hostMatches { return false }
-            return path.hasPrefix(c.path)
+            !c.isExpired(now: now) && c.matches(host: host, path: path)
         }
 
         // 同名 cookie 取 path 最具体（最长）的那一条
@@ -79,15 +112,74 @@ public final class CookieJar: @unchecked Sendable {
 
     /// 用于 UI 层判断"是否还有任何可用的同济 cookie"。
     public func hasAnyTongjiCookie() -> Bool {
+        !validCookies(hostSuffix: "tongji.edu.cn").isEmpty
+    }
+
+    public func hasCookie(forHost host: String, path: String = "/") -> Bool {
+        let now = Date()
+        return validCookies().contains { cookie in
+            !cookie.isExpired(now: now) && cookie.matches(host: host, path: path)
+        }
+    }
+
+    /// 返回当前仍有效的 Cookie 快照。仅用于注入 WebView、诊断数量和域名，
+    /// 不允许调用方输出 `value`。
+    public func validCookies(hostSuffix: String? = nil) -> [StoredCookie] {
         let snapshot: [StoredCookie] = {
             lock.lock(); defer { lock.unlock() }
             return cookies
         }()
         let now = Date()
-        return snapshot.contains { c in
-            if let exp = c.expiresDate, exp < now { return false }
-            return c.domain.lowercased().contains("tongji.edu.cn")
+        let normalizedSuffix = hostSuffix?.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        return snapshot.filter { cookie in
+            guard !cookie.isExpired(now: now) else { return false }
+            guard let normalizedSuffix else { return true }
+            let domain = cookie.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            return domain == normalizedSuffix || domain.hasSuffix("." + normalizedSuffix)
         }
+    }
+
+    public func nativeCookies(hostSuffix: String? = nil) -> [HTTPCookie] {
+        validCookies(hostSuffix: hostSuffix).compactMap { $0.makeHTTPCookie() }
+    }
+
+    /// 把 Keychain 中仍有效的 Cookie 回灌到指定 WebView CookieStore。
+    /// 返回回灌数量，日志只能使用该数量和域名摘要，不得输出 Cookie 原文。
+    public func restoreCookies(
+        to cookieStore: WKHTTPCookieStore,
+        hostSuffix: String? = "tongji.edu.cn"
+    ) async -> Int {
+        let cookies = nativeCookies(hostSuffix: hostSuffix)
+        guard !cookies.isEmpty else { return 0 }
+        var restored = 0
+        for cookie in cookies {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                cookieStore.setCookie(cookie) {
+                    continuation.resume()
+                }
+            }
+            restored += 1
+        }
+        return restored
+    }
+
+    public func validCookieDomainSummary(hostSuffix: String? = "tongji.edu.cn") -> [String] {
+        Array(Set(validCookies(hostSuffix: hostSuffix).map(\.domain))).sorted()
+    }
+
+    @discardableResult
+    public func removeCookies(domainSuffix: String) -> Int {
+        let normalizedSuffix = domainSuffix.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        lock.lock()
+        let before = cookies.count
+        cookies.removeAll { cookie in
+            let domain = cookie.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            return domain == normalizedSuffix || domain.hasSuffix("." + normalizedSuffix)
+        }
+        let removed = before - cookies.count
+        lock.unlock()
+        if removed > 0 { persist() }
+        return removed
     }
 
     // MARK: - 写入与合并

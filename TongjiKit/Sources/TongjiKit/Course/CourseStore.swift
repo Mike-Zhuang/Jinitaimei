@@ -10,17 +10,24 @@ public final class CourseStore: ObservableObject, CampusLocalStore {
 
     @Published public private(set) var schedules: [CourseSchedule] = []
     @Published public private(set) var terms: [SchoolCalendarTerm] = []
+    @Published public private(set) var visibleTerms: [SchoolCalendarTerm] = []
     @Published public private(set) var selectedTerm: SchoolCalendarTerm?
     @Published public private(set) var isLoading = false
     @Published public private(set) var lastError: String?
 
     private let api: CourseAPI
     private let context: ModelContext
+    private let credentialStore: CredentialStore
     private let selectedCalendarIdKey = "courseSelectedCalendarId"
 
-    public init(modelContext: ModelContext, api: CourseAPI = CourseAPI()) {
+    public init(
+        modelContext: ModelContext,
+        api: CourseAPI = CourseAPI(),
+        credentialStore: CredentialStore = .shared
+    ) {
         self.context = modelContext
         self.api = api
+        self.credentialStore = credentialStore
         loadFromLocal()
     }
 
@@ -36,10 +43,13 @@ public final class CourseStore: ObservableObject, CampusLocalStore {
                     }
                     return lhs.calendarId > rhs.calendarId
                 }
-            selectedTerm = resolveSelectedTerm(from: terms)
+            visibleTerms = resolveVisibleTerms(from: terms)
+            let selectableTerms = visibleTerms.isEmpty ? terms : visibleTerms
+            selectedTerm = resolveSelectedTerm(from: selectableTerms)
             schedules = try fetchLocalSchedules(for: selectedTerm?.calendarId)
         } catch {
             terms = []
+            visibleTerms = []
             selectedTerm = nil
             schedules = []
             lastError = error.localizedDescription
@@ -165,11 +175,13 @@ public final class CourseStore: ObservableObject, CampusLocalStore {
             try clearAllTerms()
             try context.save()
             terms = []
+            visibleTerms = []
             selectedTerm = nil
             schedules = []
             lastError = nil
         } catch {
             terms = []
+            visibleTerms = []
             selectedTerm = nil
             schedules = []
             lastError = error.localizedDescription
@@ -197,7 +209,97 @@ public final class CourseStore: ObservableObject, CampusLocalStore {
         if let current = terms.first(where: \.currentTermFlag) {
             return current
         }
-        return terms.first
+        return latestTerm(in: terms)
+    }
+
+    private func resolveVisibleTerms(from terms: [SchoolCalendarTerm]) -> [SchoolCalendarTerm] {
+        guard !terms.isEmpty else { return [] }
+        let admissionYear = inferredAdmissionYear()
+        let upperTerm = terms.first(where: \.nextTermFlag) ?? terms.first(where: \.currentTermFlag)
+
+        let filtered = terms.filter { term in
+            if let admissionYear,
+               let academicYear = academicStartYear(for: term),
+               academicYear < admissionYear {
+                return false
+            }
+            guard let upperTerm else { return true }
+            return isTerm(term, notLaterThan: upperTerm)
+        }
+
+        return filtered.sorted { lhs, rhs in
+            let lhsDate = lhs.beginDay ?? .distantFuture
+            let rhsDate = rhs.beginDay ?? .distantFuture
+            if lhsDate != rhsDate {
+                return lhsDate < rhsDate
+            }
+            return lhs.calendarId < rhs.calendarId
+        }
+    }
+
+    private func inferredAdmissionYear() -> Int? {
+        if let grade = credentialStore.get(CredentialStore.Keys.tongjiGrade),
+           let year = firstFourDigitYear(in: grade) {
+            return year
+        }
+        guard let uid = credentialStore.get(CredentialStore.Keys.tongjiUid)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              uid.count >= 2 else {
+            return nil
+        }
+        let prefix = String(uid.prefix(2))
+        guard let shortYear = Int(prefix) else { return nil }
+        let currentYear = Calendar(identifier: .gregorian).component(.year, from: Date())
+        let currentShortYear = currentYear % 100
+        if shortYear <= currentShortYear + 1 {
+            return 2000 + shortYear
+        }
+        return 1900 + shortYear
+    }
+
+    private func firstFourDigitYear(in text: String) -> Int? {
+        let scalars = Array(text.unicodeScalars)
+        guard scalars.count >= 4 else { return nil }
+        for index in 0...(scalars.count - 4) {
+            let slice = scalars[index..<(index + 4)]
+            guard slice.allSatisfy({ CharacterSet.decimalDigits.contains($0) }) else {
+                continue
+            }
+            let value = String(String.UnicodeScalarView(slice))
+            if let year = Int(value), (1900...2100).contains(year) {
+                return year
+            }
+        }
+        return nil
+    }
+
+    private func academicStartYear(for term: SchoolCalendarTerm) -> Int? {
+        if let year = firstFourDigitYear(in: term.fullName) {
+            return year
+        }
+        guard let beginDay = term.beginDay else { return nil }
+        let calendar = Calendar(identifier: .gregorian)
+        let year = calendar.component(.year, from: beginDay)
+        let month = calendar.component(.month, from: beginDay)
+        return month >= 7 ? year : year - 1
+    }
+
+    private func isTerm(_ term: SchoolCalendarTerm, notLaterThan upperTerm: SchoolCalendarTerm) -> Bool {
+        if let beginDay = term.beginDay, let upperBeginDay = upperTerm.beginDay {
+            return beginDay <= upperBeginDay
+        }
+        return term.calendarId <= upperTerm.calendarId
+    }
+
+    private func latestTerm(in terms: [SchoolCalendarTerm]) -> SchoolCalendarTerm? {
+        terms.max { lhs, rhs in
+            let lhsDate = lhs.beginDay ?? .distantPast
+            let rhsDate = rhs.beginDay ?? .distantPast
+            if lhsDate != rhsDate {
+                return lhsDate < rhsDate
+            }
+            return lhs.calendarId < rhs.calendarId
+        }
     }
 
     private func replaceTerms(_ remoteTerms: [SchoolCalendarTermInfo]) throws {

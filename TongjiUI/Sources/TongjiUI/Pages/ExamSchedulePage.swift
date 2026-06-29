@@ -239,6 +239,7 @@ private struct ExamExportSheet: View {
     @State private var showPermissionDeniedAlert = false
     @State private var showExportError = false
     @State private var exportErrorMessage = ""
+    @State private var isExporting = false
 
     private let eventStore = EKEventStore()
     private let alarmOptions = [5, 10, 15, 30, 60]
@@ -319,15 +320,18 @@ private struct ExamExportSheet: View {
                     Button(allSelected ? "取消全选" : "全选") {
                         selectedExamIds = allSelected ? [] : Set(exams.map(\.sourceId))
                     }
+                    .disabled(isExporting)
                 }
 
                 ToolbarItem(placement: .confirmationAction) {
                     if selectedExamIds.isEmpty {
                         Button("取消") { dismiss() }
+                            .disabled(isExporting)
                     } else {
-                        Button("导出") {
+                        Button(isExporting ? "导出中" : "导出") {
                             Task { await presentCalendarChooser() }
                         }
+                        .disabled(isExporting)
                     }
                 }
             }
@@ -355,6 +359,7 @@ private struct ExamExportSheet: View {
 
     @MainActor
     private func presentCalendarChooser() async {
+        selectedCalendar = nil
         do {
             let granted = try await eventStore.requestWriteOnlyAccessToEvents()
             showCalendarChooser = granted
@@ -365,6 +370,8 @@ private struct ExamExportSheet: View {
     }
 
     private func export(to calendar: EKCalendar) {
+        guard !isExporting else { return }
+        isExporting = true
         do {
             try ExamCalendarExporter.export(
                 exams: exams,
@@ -375,6 +382,7 @@ private struct ExamExportSheet: View {
             )
             dismiss()
         } catch {
+            isExporting = false
             exportErrorMessage = error.localizedDescription
             showExportError = true
         }

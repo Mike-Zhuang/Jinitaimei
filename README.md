@@ -35,7 +35,15 @@
 
 Cookie 处理：所有响应里的 `Set-Cookie` 会被合并回 `CookieJar.shared`（结构化存储，按 domain / path / expires 过滤、持久化到 Keychain `tongji_cookies_jar`），让服务端滚动刷新的 sessionId 立即生效。
 
-日程页的校历接口只用于缓存"本学期第几周对应哪一段日期"：`calendarId`、`beginDay`、`endDay`、`weekNum` 等。当前显示第几周由本机系统日期和缓存的 `beginDay` 即时计算，同一学期内不会每次进入日程页都请求校历接口。
+Cookie 双向同步：参考 Android 下游项目更稳定的“全局 CookieJar + SSO 预热 + 统一请求注入”思路，iOS 端现在在静默续期、密码回填和回前台会话检查前，会把 Keychain 中仍有效的同济 Cookie 回灌到隐藏 `WKWebView`；登录成功、续期成功和 `all.tongji.edu.cn` 预热完成后，再从 `WKHTTPCookieStore` 回写 `CookieJar`。这样 URLSession 和 WebView 不再各自持有一套割裂的登录态。
+
+SSO 预热：登录成功或回前台发现 `all.tongji.edu.cn` Cookie 不完整时，App 会非阻塞访问 `https://all.tongji.edu.cn/new/index.html`，用于补齐同济门户域 Cookie。预热失败只写脱敏诊断日志，不会直接判定一系统掉线。
+
+安全边界：不会照搬 Android 端把 session cookie 强制延长 24 小时、BODY 级网络日志、Cookie / Token / `sessiondata` 明文日志、或用 `uid` 兜底充当 `X-Token` 的做法。iOS 端继续保留真实过期时间和 Face ID / Touch ID 保护的自动登录策略。
+
+日程页的校历接口只用于缓存"本学期第几周对应哪一段日期"：`calendarId`、`beginDay`、`endDay`、`weekNum` 等。当前显示第几周由本机系统日期和缓存的 `beginDay` 即时计算，同一学期内不会每次进入日程页都请求校历接口。学期选择只展示从学生入学学年第一学期开始，到当前学期加下一学期为止；入学年份优先取一系统个人资料中的年级，缺失时用学号前两位兜底推断。
+
+课表导出到系统日历时，导出 Sheet 内完成课程选择、考试开关、提醒和目标日历选择。若系统只授予写入权限、不能列出全部日历，则默认写入系统默认日历。
 
 ### 考试安排与课程成绩
 

@@ -183,11 +183,7 @@ public final class TongjiHTTPClient: @unchecked Sendable {
 
     private func validate(response: URLResponse, data: Data?, endpoint: EndpointKind) throws {
         guard let http = response as? HTTPURLResponse else { return }
-        if let url = http.url,
-           endpoint == .oneSystem,
-           let fields = http.allHeaderFields as? [String: String] {
-            CookieJar.shared.mergeSetCookieFields(fields, for: url)
-        }
+        mergeSetCookieFields(from: http, endpoint: endpoint)
         if http.statusCode == 401 || http.statusCode == 403 {
             throw AuthError.expired("\(endpoint.logName) 凭证已失效")
         }
@@ -203,6 +199,23 @@ public final class TongjiHTTPClient: @unchecked Sendable {
         if let data, let status = try? JSONDecoder().decode(BusinessStatus.self, from: data) {
             log(endpoint: endpoint, response: http, status: status)
         }
+    }
+
+    private func mergeSetCookieFields(from response: HTTPURLResponse, endpoint: EndpointKind) {
+        guard endpoint == .oneSystem, let url = response.url else { return }
+        var fields: [String: String] = [:]
+        for (key, value) in response.allHeaderFields {
+            guard let key = key as? String else { continue }
+            if let value = value as? String {
+                fields[key] = value
+            } else {
+                fields[key] = "\(value)"
+            }
+        }
+        guard fields.keys.contains(where: { $0.caseInsensitiveCompare("Set-Cookie") == .orderedSame }) else {
+            return
+        }
+        CookieJar.shared.mergeSetCookieFields(fields, for: url)
     }
 
     private func log(endpoint: EndpointKind, response: HTTPURLResponse, status: BusinessStatus) {

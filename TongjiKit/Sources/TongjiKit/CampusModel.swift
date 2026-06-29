@@ -146,8 +146,12 @@ public final class CampusModel: ObservableObject {
 
         Task { @MainActor in
             do {
+                await AuthRecoveryManager.shared.silentCoordinator.restoreStoredTongjiCookiesToWebView()
                 _ = try await SessionAPI(store: store).refreshSessionUserOnce()
                 markValid()
+                if !CookieJar.shared.hasCookie(forHost: "all.tongji.edu.cn") {
+                    await AuthRecoveryManager.shared.silentCoordinator.warmUpAllTongjiSSOIfNeeded()
+                }
             } catch let error as AuthError where error.isExpired {
                 markRecoverableExpired()
                 _ = await AuthRecoveryManager.shared.renewIfPossible()

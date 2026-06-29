@@ -151,6 +151,7 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
         log("静默续期启动（不清 WebView 数据）")
         resetState(mode: .silent)
         stage = .extractingTongji
+        await restoreStoredTongjiCookiesToWebView()
 
         return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             silentRenewContinuation = continuation
@@ -201,7 +202,9 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
         capturedUsername = username  // 记下来以便复用 capture 逻辑
         capturedPassword = password
 
-        // 先把 IAM 域的旧 cookie 清掉，让 IAM 重新出表单
+        // 先把 Keychain 中还有效的同济 Cookie 回灌，再清 IAM 域旧 Cookie。
+        // 这样既保留 1.tongji/all.tongji 的状态，又能让 IAM 重新出表单。
+        await restoreStoredTongjiCookiesToWebView()
         await clearCookies(forDomainSuffix: "iam.tongji.edu.cn")
         await clearCookies(forDomainSuffix: "ids.tongji.edu.cn")
 
@@ -239,6 +242,23 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
                 }
             }
         }
+    }
+
+    /// 将结构化 CookieJar 中仍有效的同济 Cookie 回灌到当前隐藏 WebView。
+    /// 用于 App 启动/回前台、静默续期和密码回填前同步 WebView 与 URLSession 登录态。
+    @discardableResult
+    public func restoreStoredTongjiCookiesToWebView() async -> Int {
+        let cookieStore = webView.configuration.websiteDataStore.httpCookieStore
+        let count = await CookieJar.shared.restoreCookies(to: cookieStore)
+        let domains = CookieJar.shared.validCookieDomainSummary().joined(separator: ",")
+        log("已向一系统 WebView 回灌同济 Cookie，count=\(count)，domains=\(domains.isEmpty ? "<empty>" : domains)")
+        return count
+    }
+
+    /// 外部可复用的 all.tongji SSO Cookie 预热入口。
+    /// 失败只记录诊断，不判定一系统登录态失效。
+    public func warmUpAllTongjiSSOIfNeeded() async {
+        await warmUpAllTongjiSSOCookie(trigger: "外部触发")
     }
 
     // MARK: - URL 路由判定
@@ -375,24 +395,34 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
         }
 
         Task { @MainActor [weak self] in
-            await self?.warmUpAllTongjiSSOCookie()
+            await self?.warmUpAllTongjiSSOCookie(trigger: "一系统登录成功")
         }
 
         return true
     }
 
-    private func warmUpAllTongjiSSOCookie() async {
+    private func warmUpAllTongjiSSOCookie(trigger: String) async {
+        guard ssoWarmUpDelegate == nil else {
+            log("  all.tongji.edu.cn SSO Cookie 预热已有任务在跑，跳过重复触发")
+            return
+        }
         let url = URL(string: "https://all.tongji.edu.cn/new/index.html")!
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
         let warmUpWebView = WKWebView(frame: .zero, configuration: config)
         ssoWarmUpWebView = warmUpWebView
+        let restored = await CookieJar.shared.restoreCookies(
+            to: warmUpWebView.configuration.websiteDataStore.httpCookieStore
+        )
+        log("  all.tongji.edu.cn SSO Cookie 预热启动 trigger=\(trigger)，回灌 Cookie count=\(restored)")
         let delegate = AllTongjiSSOWarmUpDelegate { [weak self, weak warmUpWebView] in
             guard let self, let warmUpWebView else { return }
             Task { @MainActor in
                 let cookies = await warmUpWebView.configuration.websiteDataStore.httpCookieStore.allCookies()
-                CookieJar.shared.mergeNative(cookies.filter { $0.domain.lowercased().contains("tongji.edu.cn") })
-                self.log("  all.tongji.edu.cn SSO Cookie 预热完成，cookieCount=\(cookies.count)")
+                let tongjiCookies = cookies.filter { $0.domain.lowercased().contains("tongji.edu.cn") }
+                CookieJar.shared.mergeNative(tongjiCookies)
+                let domains = Array(Set(tongjiCookies.map(\.domain))).sorted().joined(separator: ",")
+                self.log("  all.tongji.edu.cn SSO Cookie 预热完成，cookieCount=\(tongjiCookies.count)，domains=\(domains.isEmpty ? "<empty>" : domains)")
                 self.ssoWarmUpWebView = nil
                 self.ssoWarmUpDelegate = nil
             }
@@ -609,6 +639,10 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
     }
 
     private func clearCookies(forDomainSuffix suffix: String) async {
+        let removedFromJar = CookieJar.shared.removeCookies(domainSuffix: suffix)
+        if removedFromJar > 0 {
+            log("已从 CookieJar 清理 \(suffix) Cookie，count=\(removedFromJar)")
+        }
         let dataStore = webView.configuration.websiteDataStore
         let records = await dataStore.dataRecords(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes())
         let matched = records.filter { $0.displayName.lowercased().hasSuffix(suffix.lowercased()) }

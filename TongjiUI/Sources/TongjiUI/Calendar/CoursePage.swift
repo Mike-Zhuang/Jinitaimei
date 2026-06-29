@@ -2,7 +2,6 @@ import SwiftUI
 import SwiftData
 import TongjiKit
 import EventKit
-import EventKitUI
 
 /// 日程 Tab 主页：按周展示同济课表。
 ///
@@ -36,7 +35,7 @@ public struct CoursePage: View {
                 if store.schedules.isEmpty && examStore.scheduledExams.isEmpty && !store.isLoading && !examStore.isLoading {
                     emptyState
                 } else {
-                    if !store.terms.isEmpty {
+                    if !store.visibleTerms.isEmpty {
                         Section {
                             Picker("学期", selection: Binding(
                                 get: { store.selectedCalendarId ?? 0 },
@@ -47,7 +46,7 @@ public struct CoursePage: View {
                                     }
                                 }
                             )) {
-                                ForEach(store.terms) { term in
+                                ForEach(store.visibleTerms) { term in
                                     Text(term.fullName)
                                         .tag(term.calendarId)
                                 }
@@ -278,17 +277,7 @@ public struct CoursePage: View {
 
     @MainActor
     private func requestCalendarAccess() async {
-        let eventStore = EKEventStore()
-        do {
-            let granted = try await eventStore.requestWriteOnlyAccessToEvents()
-            if granted {
-                showExportSheet = true
-            } else {
-                showCalendarPermissionAlert = true
-            }
-        } catch {
-            showCalendarPermissionAlert = true
-        }
+        showExportSheet = true
     }
 }
 
@@ -303,11 +292,13 @@ private struct CourseExportSheet: View {
     @State private var allKeys: [CourseExportKey] = []
     @State private var selectedKeys = Set<CourseExportKey>()
     @State private var includeExams = true
-    @State private var showCalendarChooser = false
     @State private var showPermissionDeniedAlert = false
     @State private var showExportError = false
     @State private var exportErrorMessage = ""
     @State private var selectedAlarmMinutes = Set<Int>()
+    @State private var writableCalendars: [EKCalendar] = []
+    @State private var calendarAccessState: CalendarAccessState = .loading
+    @State private var isExporting = false
 
     private let eventStore = EKEventStore()
     private let alarmOptions = [5, 10, 15, 30, 60]
@@ -315,6 +306,10 @@ private struct CourseExportSheet: View {
 
     private var allSelected: Bool {
         !allKeys.isEmpty && selectedKeys.count == allKeys.count
+    }
+
+    private var canExport: Bool {
+        !isExporting && !selectedKeys.isEmpty && selectedCalendar != nil && calendarAccessState.canWrite
     }
 
     var body: some View {
@@ -374,6 +369,14 @@ private struct CourseExportSheet: View {
                 } footer: {
                     Text("会把所选提醒写入每一个导出的课程事件。")
                 }
+
+                Section {
+                    calendarTargetContent
+                } header: {
+                    Text("目标日历")
+                } footer: {
+                    Text(calendarTargetFooter)
+                }
             }
             .environment(\.editMode, .constant(.active))
             .navigationTitle("导出到日历")
@@ -390,12 +393,15 @@ private struct CourseExportSheet: View {
                 selectedKeys = Set(allKeys)
                 loadAlarmSelection()
             }
+            .task {
+                await prepareCalendarAccess()
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(allSelected ? "取消全选" : "全选") {
                         selectedKeys = allSelected ? [] : Set(allKeys)
                     }
-                    .disabled(allKeys.isEmpty)
+                    .disabled(allKeys.isEmpty || isExporting)
                 }
 
                 ToolbarItem(placement: .confirmationAction) {
@@ -403,10 +409,17 @@ private struct CourseExportSheet: View {
                         Button("取消") {
                             dismiss()
                         }
+                        .disabled(isExporting)
                     } else {
-                        Button("导出") {
-                            Task { await presentCalendarChooser() }
+                        Button(isExporting ? "导出中" : "导出") {
+                            guard let selectedCalendar else {
+                                exportErrorMessage = "请选择一个可写入的日历。"
+                                showExportError = true
+                                return
+                            }
+                            export(to: selectedCalendar)
                         }
+                        .disabled(!canExport)
                     }
                 }
             }
@@ -420,15 +433,81 @@ private struct CourseExportSheet: View {
             } message: {
                 Text(exportErrorMessage)
             }
-            .sheet(isPresented: $showCalendarChooser) {
-                CalendarChooserSheet(selectedCalendar: $selectedCalendar, eventStore: eventStore)
-                    .ignoresSafeArea()
-                    .onDisappear {
-                        if let selectedCalendar {
-                            export(to: selectedCalendar)
+        }
+    }
+
+    @ViewBuilder
+    private var calendarTargetContent: some View {
+        switch calendarAccessState {
+        case .loading:
+            HStack {
+                ProgressView()
+                Text("正在读取日历权限")
+                    .foregroundStyle(.secondary)
+            }
+        case .denied:
+            VStack(alignment: .leading, spacing: 8) {
+                Text("无法访问日历")
+                Text("请在系统设置中允许 Jinitaimei 访问日历。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("重新检查权限") {
+                    Task { await prepareCalendarAccess(force: true) }
+                }
+            }
+        case .writeOnly:
+            HStack {
+                Image(systemName: "calendar.badge.plus")
+                    .foregroundStyle(.blue)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(selectedCalendar?.title ?? "系统默认日历")
+                    Text("仅写入权限")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        case .full:
+            if writableCalendars.isEmpty {
+                Text("没有可写入的日历")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(writableCalendars, id: \.calendarIdentifier) { calendar in
+                    Button {
+                        selectedCalendar = calendar
+                    } label: {
+                        HStack(spacing: 12) {
+                            Circle()
+                                .fill(Color(cgColor: calendar.cgColor))
+                                .frame(width: 10, height: 10)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(calendar.title)
+                                    .foregroundStyle(.primary)
+                                Text(calendar.source.title)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if selectedCalendar?.calendarIdentifier == calendar.calendarIdentifier {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(.blue)
+                            }
                         }
                     }
+                }
             }
+        }
+    }
+
+    private var calendarTargetFooter: String {
+        switch calendarAccessState {
+        case .loading:
+            return "正在准备目标日历。"
+        case .denied:
+            return "没有日历权限时无法导出课程。"
+        case .writeOnly:
+            return "当前只有写入权限，系统不允许列出所有日历；课程将写入默认日历。重复导出会更新 Jinitaimei 已导出的同一批课程，不会重复添加。"
+        case .full:
+            return "课程和考试会写入这里选中的日历。重复导出会更新 Jinitaimei 已导出的同一批课程，不会重复添加。"
         }
     }
 
@@ -453,17 +532,62 @@ private struct CourseExportSheet: View {
     }
 
     @MainActor
-    private func presentCalendarChooser() async {
+    private func prepareCalendarAccess(force: Bool = false) async {
+        if !force, calendarAccessState != .loading, selectedCalendar != nil {
+            return
+        }
+        calendarAccessState = .loading
+
+        let fullAccessGranted: Bool
         do {
-            let granted = try await eventStore.requestWriteOnlyAccessToEvents()
-            showCalendarChooser = granted
-            showPermissionDeniedAlert = !granted
+            fullAccessGranted = try await eventStore.requestFullAccessToEvents()
         } catch {
+            fullAccessGranted = false
+        }
+
+        if fullAccessGranted {
+            writableCalendars = eventStore.calendars(for: .event)
+                .filter(\.allowsContentModifications)
+                .sorted { lhs, rhs in
+                    if lhs.source.title == rhs.source.title {
+                        return lhs.title < rhs.title
+                    }
+                    return lhs.source.title < rhs.source.title
+                }
+            if let defaultCalendar = eventStore.defaultCalendarForNewEvents,
+               defaultCalendar.allowsContentModifications,
+               writableCalendars.contains(where: { $0.calendarIdentifier == defaultCalendar.calendarIdentifier }) {
+                selectedCalendar = defaultCalendar
+            } else {
+                selectedCalendar = writableCalendars.first
+            }
+            calendarAccessState = .full
+            return
+        }
+
+        do {
+            let writeOnlyGranted = try await eventStore.requestWriteOnlyAccessToEvents()
+            if writeOnlyGranted, let defaultCalendar = eventStore.defaultCalendarForNewEvents {
+                selectedCalendar = defaultCalendar
+                writableCalendars = [defaultCalendar]
+                calendarAccessState = .writeOnly
+            } else {
+                selectedCalendar = nil
+                writableCalendars = []
+                calendarAccessState = .denied
+                showPermissionDeniedAlert = true
+            }
+        } catch {
+            selectedCalendar = nil
+            writableCalendars = []
+            calendarAccessState = .denied
             showPermissionDeniedAlert = true
         }
     }
 
     private func export(to calendar: EKCalendar) {
+        guard !isExporting else { return }
+        isExporting = true
         do {
             try CourseCalendarExporter.export(
                 schedules: schedules,
@@ -484,6 +608,7 @@ private struct CourseExportSheet: View {
             }
             dismiss()
         } catch {
+            isExporting = false
             exportErrorMessage = error.localizedDescription
             showExportError = true
         }
@@ -508,46 +633,13 @@ private struct CourseExportSheet: View {
     }
 }
 
-private struct CalendarChooserSheet: UIViewControllerRepresentable {
-    @Binding var selectedCalendar: EKCalendar?
-    @Environment(\.dismiss) private var dismiss
-    let eventStore: EKEventStore
+private enum CalendarAccessState: Equatable {
+    case loading
+    case full
+    case writeOnly
+    case denied
 
-    func makeUIViewController(context: Context) -> UINavigationController {
-        let chooser = EKCalendarChooser(
-            selectionStyle: .single,
-            displayStyle: .allCalendars,
-            entityType: .event,
-            eventStore: eventStore
-        )
-        chooser.selectedCalendars = []
-        chooser.delegate = context.coordinator
-        chooser.showsDoneButton = true
-        return UINavigationController(rootViewController: chooser)
-    }
-
-    func updateUIViewController(_ uiViewController: UINavigationController, context: Context) {}
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
-    }
-
-    final class Coordinator: NSObject, UINavigationControllerDelegate, EKCalendarChooserDelegate {
-        let parent: CalendarChooserSheet
-
-        init(_ parent: CalendarChooserSheet) {
-            self.parent = parent
-        }
-
-        func calendarChooserDidFinish(_ calendarChooser: EKCalendarChooser) {
-            if let calendar = calendarChooser.selectedCalendars.first {
-                parent.selectedCalendar = calendar
-            }
-            parent.dismiss()
-        }
-
-        func calendarChooserDidCancel(_ calendarChooser: EKCalendarChooser) {
-            parent.dismiss()
-        }
+    var canWrite: Bool {
+        self == .full || self == .writeOnly
     }
 }
