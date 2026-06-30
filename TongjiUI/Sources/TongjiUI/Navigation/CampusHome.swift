@@ -27,12 +27,15 @@ public struct CampusHome: View {
                         ContentUnavailableView(
                             "请先登录校园账户",
                             systemImage: "person.crop.circle.badge.exclamationmark",
-                            description: Text("登录后可查看卓越星、教务通知等校园服务")
+                            description: Text("登录后可查看卓越星、教务通知等校园服务；洗衣机状态无需登录。")
                         )
                         .listEmptyRowStyle()
                     }
-                } else if !model.pinnedServices.isEmpty {
-                    ForEach(model.pinnedServices) { service in
+                }
+
+                let visiblePinnedServices = model.pinnedServices.filter { campusModel.loggedIn || !$0.requiresLogin }
+                if !visiblePinnedServices.isEmpty {
+                    ForEach(visiblePinnedServices) { service in
                         Section {
                             NavigationLink {
                                 service.destination
@@ -52,9 +55,10 @@ public struct CampusHome: View {
                     }
                 }
 
-                if campusModel.loggedIn {
+                let visibleUnpinnedServices = model.unpinnedServices.filter { campusModel.loggedIn || !$0.requiresLogin }
+                if !visibleUnpinnedServices.isEmpty {
                     Section("全部服务") {
-                        ForEach(model.unpinnedServices) { service in
+                        ForEach(visibleUnpinnedServices) { service in
                             NavigationLink {
                                 service.destination
                             } label: {
@@ -98,7 +102,19 @@ public struct CampusHome: View {
         defer { isRefreshingServices = false }
 
         campusModel.refresh()
-        guard campusModel.loggedIn else { return }
+        let laundryStore = LaundryStore(modelContext: modelContext)
+        laundryStore.clearError()
+        await laundryStore.syncRooms(force: true)
+        if let pinnedLaundryRoomId = UserDefaults.standard.string(forKey: LaundryPreferences.pinnedRoomIdKey),
+           !pinnedLaundryRoomId.isEmpty {
+            await laundryStore.syncPinnedRoom(id: pinnedLaundryRoomId, force: true)
+        }
+        laundryStore.loadFromLocal()
+
+        guard campusModel.loggedIn else {
+            refreshToken = UUID()
+            return
+        }
 
         await withTaskGroup(of: Void.self) { group in
             group.addTask { @MainActor in
@@ -117,7 +133,7 @@ public struct CampusHome: View {
         let gradeStore = GradeStore(modelContext: modelContext)
         let libraryStore = LibrarySpaceStore(modelContext: modelContext)
         let waterStore = WaterControlStore(modelContext: modelContext)
-        let localStores: [CampusLocalStore] = [yikatongStore, examStore, gradeStore, libraryStore, waterStore]
+        let localStores: [CampusLocalStore] = [yikatongStore, examStore, gradeStore, libraryStore, waterStore, laundryStore]
         localStores.forEach { $0.clearError() }
 
         await yikatongStore.sync(force: true)
@@ -147,6 +163,7 @@ private enum CampusService: String, CaseIterable, Codable, Identifiable {
     case gradeReport
     case librarySpace
     case waterControl
+    case laundry
 
     var id: String { rawValue }
 
@@ -167,6 +184,17 @@ private enum CampusService: String, CaseIterable, Codable, Identifiable {
             Label("图书馆座位", systemImage: "chair.lounge")
         case .waterControl:
             Label("智能控水", systemImage: "drop.fill")
+        case .laundry:
+            Label("洗衣机", systemImage: "washer")
+        }
+    }
+
+    var requiresLogin: Bool {
+        switch self {
+        case .laundry:
+            false
+        case .starActivity, .teachingNotice, .campusCard, .examSchedule, .gradeReport, .librarySpace, .waterControl:
+            true
         }
     }
 
@@ -187,6 +215,8 @@ private enum CampusService: String, CaseIterable, Codable, Identifiable {
             LibrarySpacePinnedCard(refreshToken: refreshToken)
         case .waterControl:
             WaterControlPinnedCard(refreshToken: refreshToken)
+        case .laundry:
+            LaundryPinnedCard(refreshToken: refreshToken)
         }
     }
 
@@ -207,6 +237,8 @@ private enum CampusService: String, CaseIterable, Codable, Identifiable {
             LibrarySpacePageContainer()
         case .waterControl:
             WaterControlPageContainer()
+        case .laundry:
+            LaundryPageContainer()
         }
     }
 }
@@ -226,7 +258,7 @@ private final class CampusHomeModel: ObservableObject {
     init() {
         let defaults = UserDefaults.standard
         self.pinnedServices = Self.load(key: pinnedKey, from: defaults) ?? []
-        self.unpinnedServices = Self.load(key: unpinnedKey, from: defaults) ?? [.starActivity, .teachingNotice, .campusCard, .examSchedule, .gradeReport, .librarySpace, .waterControl]
+        self.unpinnedServices = Self.load(key: unpinnedKey, from: defaults) ?? [.starActivity, .teachingNotice, .campusCard, .examSchedule, .gradeReport, .librarySpace, .waterControl, .laundry]
         normalize()
     }
 
@@ -470,7 +502,15 @@ private struct TeachingNoticeCard: View {
     }
 
     private func loadLatestNotice(force: Bool = false) async {
-        guard campusModel.loggedIn, !isLoading else { return }
+        guard campusModel.loggedIn else {
+            print("[TeachingNoticeCard] 跳过加载：未登录")
+            return
+        }
+        guard !isLoading else {
+            print("[TeachingNoticeCard] 跳过加载：已有加载任务 force=\(force)")
+            return
+        }
+        print("[TeachingNoticeCard] 开始加载最新通知 force=\(force)")
         if force {
             errorMessage = nil
         }
@@ -480,9 +520,12 @@ private struct TeachingNoticeCard: View {
         do {
             latestNotice = try await TeachingNoticeAPI().fetchLatestNotice()
             errorMessage = nil
+            print("[TeachingNoticeCard] 最新通知加载成功 hasNotice=\(latestNotice != nil)")
         } catch {
             latestNotice = nil
             errorMessage = (error as? LocalizedError)?.errorDescription ?? "最新通知加载失败"
+            let message = errorMessage ?? String(describing: error)
+            print("[TeachingNoticeCard] 最新通知加载失败 error=\(message)")
         }
     }
 }
@@ -1015,6 +1058,126 @@ private struct WaterControlPinnedCard: View {
     }
 }
 
+private struct LaundryPinnedCard: View {
+    @Environment(\.modelContext) private var modelContext
+    let refreshToken: UUID
+    @StateObject private var storeHolder = LaundryStoreHolder()
+    @AppStorage(LaundryPreferences.pinnedRoomIdKey) private var pinnedRoomId = ""
+
+    var body: some View {
+        PinnedServiceCardLayout(title: "洗衣机", systemImage: "washer.fill", color: .teal) {
+            if let store = storeHolder.store,
+               let pinnedRoom = pinnedRoom(in: store) {
+                let machines = store.machines(for: pinnedRoom)
+                let summary = LaundryMachineSummary(machines: machines)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(pinnedRoom.displayName)
+                        .font(.callout)
+                        .bold()
+                        .lineLimit(1)
+
+                    if !machines.isEmpty {
+                        Text("\(summary.idleCount)/\(summary.totalCount) 空闲 · 运行中 \(summary.runningCount)")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    } else if store.loadingRoomIds.contains(pinnedRoom.id) {
+                        HStack(spacing: 6) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("正在同步常用洗衣房")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text("下拉刷新后只同步这个洗衣房")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let error = store.error(for: pinnedRoom) {
+                        Text(error)
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                            .lineLimit(1)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let store = storeHolder.store, !pinnedRoomId.isEmpty, !store.rooms.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("未找到常用洗衣房")
+                        .font(.callout)
+                        .bold()
+                    Text("进入后重新选择")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let store = storeHolder.store, !store.rooms.isEmpty {
+                Text("进入后选择常用洗衣房")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let store = storeHolder.store, store.isLoadingRooms {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("正在加载洗衣机")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let store = storeHolder.store, let error = store.lastError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Text("无需登录，进入后同步附近洗衣房")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .task {
+            await reloadLocalStore()
+            guard let store = storeHolder.store else { return }
+            if store.rooms.isEmpty {
+                await store.syncRooms()
+            }
+            if !pinnedRoomId.isEmpty {
+                await store.syncPinnedRoom(id: pinnedRoomId)
+            }
+        }
+        .onAppear {
+            Task { await reloadLocalStore() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .laundryDataDidChange)) { _ in
+            Task { await reloadLocalStore() }
+        }
+        .onChange(of: refreshToken) { _, _ in
+            Task {
+                await reloadLocalStore()
+            }
+        }
+    }
+
+    private func prepareStoreIfNeeded() async {
+        if storeHolder.store == nil {
+            storeHolder.store = LaundryStore(modelContext: modelContext)
+        }
+    }
+
+    private func reloadLocalStore() async {
+        await prepareStoreIfNeeded()
+        storeHolder.store?.loadFromLocal()
+    }
+
+    private func pinnedRoom(in store: LaundryStore) -> LaundryRoom? {
+        guard !pinnedRoomId.isEmpty else { return nil }
+        return store.room(id: pinnedRoomId)
+    }
+}
+
 private struct PinnedServiceCardLayout<Content: View>: View {
     let title: String
     let systemImage: String
@@ -1112,6 +1275,13 @@ private struct WaterControlPageContainer: View {
     }
 }
 
+private struct LaundryPageContainer: View {
+    @Environment(\.modelContext) private var modelContext
+    var body: some View {
+        LaundryPage(modelContext: modelContext)
+    }
+}
+
 @MainActor
 private final class CampusCardStoreHolder: ObservableObject {
     @Published var store: YikatongStore?
@@ -1135,6 +1305,11 @@ private final class LibrarySpaceStoreHolder: ObservableObject {
 @MainActor
 private final class WaterControlStoreHolder: ObservableObject {
     @Published var store: WaterControlStore?
+}
+
+@MainActor
+private final class LaundryStoreHolder: ObservableObject {
+    @Published var store: LaundryStore?
 }
 
 private extension LibrarySpaceLibrary {

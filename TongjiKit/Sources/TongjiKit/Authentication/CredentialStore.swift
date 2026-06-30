@@ -264,5 +264,8 @@ public final class CredentialStore: @unchecked Sendable {
         public static let waterControlCookies = "water_control_cookies"
         public static let waterControlApiToken = "water_control_api_token"
         public static let waterControlApiTokenSavedAt = "water_control_api_token_saved_at"
+
+        // 宿舍洗衣机（wx2.cooleasy.net）相关
+        public static let laundryCookies = "laundry_cookies"
     }
 }

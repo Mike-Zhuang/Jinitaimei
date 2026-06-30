@@ -50,6 +50,7 @@ public final class TeachingNoticeAPI {
     // MARK: - Once 版本
 
     public func fetchNoticesOnce(page: Int, pageSize: Int) async throws -> TeachingNoticePage {
+        print("[TeachingNotice] 开始获取列表 page=\(page) pageSize=\(pageSize)")
         let body = try JSONEncoder().encode(
             TeachingNoticeListRequest(total: 0, pageNum: page, pageSize: pageSize)
         )
@@ -63,6 +64,7 @@ public final class TeachingNoticeAPI {
 
         let payload = try JSONDecoder().decode(TeachingNoticeListResponse.self, from: data)
         guard payload.code == 200, let data = payload.data else {
+            print("[TeachingNotice] 列表响应异常 page=\(page) code=\(payload.code) msg=\(payload.msg.isEmpty ? "<empty>" : payload.msg)")
             throw AuthError.loginFlowFailed(payload.msg.isEmpty ? "通知公告列表响应异常" : payload.msg)
         }
 
@@ -75,6 +77,7 @@ public final class TeachingNoticeAPI {
                 read: $0.marReadStatus ?? false
             )
         }
+        print("[TeachingNotice] 列表获取成功 page=\(data.pageNum) count=\(notices.count) total=\(data.total) hasMore=\(data.pageNum * data.pageSize < data.total)")
         return TeachingNoticePage(
             notices: TeachingNotice.sortedForList(notices),
             page: data.pageNum,
@@ -84,6 +87,7 @@ public final class TeachingNoticeAPI {
     }
 
     public func fetchLatestNoticeOnce() async throws -> TeachingNotice? {
+        print("[TeachingNotice] 开始获取最新通知")
         var all: [TeachingNotice] = []
         var currentPage = 1
         while true {
@@ -92,10 +96,12 @@ public final class TeachingNoticeAPI {
             guard page.hasMore else { break }
             currentPage += 1
         }
+        print("[TeachingNotice] 最新通知候选 count=\(all.count)")
         return TeachingNotice.newest(all)
     }
 
     public func fetchNoticeDetailOnce(id: Int) async throws -> TeachingNoticeDetail {
+        print("[TeachingNotice] 开始获取详情 id=\(id)")
         let timestamp = Int(Date().timeIntervalSince1970 * 1000)
         let request = try httpClient.request(
             endpoint: .oneSystem,
@@ -110,6 +116,7 @@ public final class TeachingNoticeAPI {
 
         let payload = try JSONDecoder().decode(TeachingNoticeDetailResponse.self, from: data)
         guard payload.code == 200, let item = payload.data else {
+            print("[TeachingNotice] 详情响应异常 id=\(id) code=\(payload.code) msg=\(payload.msg.isEmpty ? "<empty>" : payload.msg)")
             throw AuthError.loginFlowFailed(payload.msg.isEmpty ? "通知公告详情响应异常" : payload.msg)
         }
 
@@ -121,6 +128,7 @@ public final class TeachingNoticeAPI {
                 fileLocation: $0.fileLacation
             )
         } ?? []
+        print("[TeachingNotice] 详情解析成功 id=\(id) attachments=\(attachments.count) contentLen=\(item.content?.count ?? 0)")
 
         return TeachingNoticeDetail(
             id: item.id,

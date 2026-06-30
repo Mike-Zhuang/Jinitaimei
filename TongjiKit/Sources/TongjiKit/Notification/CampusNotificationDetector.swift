@@ -8,20 +8,23 @@ public final class CampusNotificationDetector {
     private let notificationManager: LocalNotificationManager
     private let preferenceStore: NotificationPreferenceStore
     private let followStore: StarActivityFollowStore
+    private let credentialStore: CredentialStore
     private let teachingKnownIdsKeyPrefix = "notificationKnownTeachingNoticeIds"
     private let starSnapshotKey = "notificationStarActivitySnapshots"
     private let campusCardLowStateKey = "notificationCampusCardLowState"
 
     public init(
         defaults: UserDefaults = .standard,
-        notificationManager: LocalNotificationManager = .shared,
-        preferenceStore: NotificationPreferenceStore = .shared,
-        followStore: StarActivityFollowStore = .shared
+        notificationManager: LocalNotificationManager? = nil,
+        preferenceStore: NotificationPreferenceStore? = nil,
+        followStore: StarActivityFollowStore? = nil,
+        credentialStore: CredentialStore = .shared
     ) {
         self.defaults = defaults
-        self.notificationManager = notificationManager
-        self.preferenceStore = preferenceStore
-        self.followStore = followStore
+        self.notificationManager = notificationManager ?? .shared
+        self.preferenceStore = preferenceStore ?? .shared
+        self.followStore = followStore ?? .shared
+        self.credentialStore = credentialStore
     }
 
     public func checkTeachingNoticesIfNeeded() async {
@@ -29,10 +32,15 @@ public final class CampusNotificationDetector {
         guard preferences.localNotificationsEnabled,
               preferences.teachingNoticeEnabled,
               CampusModel.shared.canCallAPI else {
+            print("[Notification] 跳过教务通知检测：local=\(preferences.localNotificationsEnabled) teaching=\(preferences.teachingNoticeEnabled) canCallAPI=\(CampusModel.shared.canCallAPI)")
+            return
+        }
+        guard hasOneSystemCredentialsForNotificationCheck() else {
             return
         }
 
         do {
+            print("[Notification] 开始检测教务通知")
             let api = TeachingNoticeAPI()
             let first = try await api.fetchNotices(page: 1)
             var notices = first.notices
@@ -40,10 +48,23 @@ public final class CampusNotificationDetector {
                 let second = try await api.fetchNotices(page: 2)
                 notices.append(contentsOf: second.notices)
             }
+            print("[Notification] 教务通知检测获取 count=\(notices.count)")
             await processTeachingNotices(notices)
         } catch {
             print("[Notification] 教务通知检测失败: \(error)")
         }
+    }
+
+    private func hasOneSystemCredentialsForNotificationCheck() -> Bool {
+        let jarCookie = CookieJar.shared.loadHeader(for: TongjiHTTPClient.EndpointKind.oneSystem.baseURL)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let legacyCookie = credentialStore.get(CredentialStore.Keys.tongjiCookies)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let sessionId = credentialStore.get(CredentialStore.Keys.tongjiSessionId)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let usable = (!jarCookie.isEmpty || !legacyCookie.isEmpty) && !sessionId.isEmpty
+        print("[Notification] 教务通知凭证预检 usable=\(usable) jarCookieLen=\(jarCookie.count) legacyCookieLen=\(legacyCookie.count) xToken=\(!sessionId.isEmpty) xTokenLen=\(sessionId.count)")
+        return usable
     }
 
     public func processTeachingNotices(_ notices: [TeachingNotice]) async {
@@ -56,11 +77,15 @@ public final class CampusNotificationDetector {
 
         let currentIds = Set(notices.map(\.id))
         guard !currentIds.isEmpty else { return }
-        guard let teachingKnownIdsKey else { return }
+        guard let teachingKnownIdsKey else {
+            print("[Notification] 教务通知检测跳过：缺少当前用户 uid，无法建立账号隔离基线")
+            return
+        }
 
         let knownIds = Set(defaults.array(forKey: teachingKnownIdsKey) as? [Int] ?? [])
         if knownIds.isEmpty {
             defaults.set(Array(currentIds).sorted(), forKey: teachingKnownIdsKey)
+            print("[Notification] 教务通知首次建立基线 uidScoped=true count=\(currentIds.count)")
             return
         }
 
@@ -79,6 +104,7 @@ public final class CampusNotificationDetector {
 
         let merged = Array(knownIds.union(currentIds)).sorted().suffix(200)
         defaults.set(Array(merged), forKey: teachingKnownIdsKey)
+        print("[Notification] 教务通知检测完成 new=\(newNotices.count) knownBefore=\(knownIds.count) knownAfter=\(merged.count)")
     }
 
     public func processStarActivities(_ activities: [CampusActivity]) async {

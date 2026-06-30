@@ -79,6 +79,7 @@ public final class TongjiHTTPClient: @unchecked Sendable {
     }
 
     public func switchOneSystemAuthContext(_ context: OneSystemAuthContext) async throws {
+        print("[OneSystemHTTP] 开始切换上下文 authId=\(context.rawValue)")
         let body = try JSONEncoder().encode(OneSystemAuthContextRequest(authId: context.rawValue))
         let request = try request(
             endpoint: .oneSystem,
@@ -89,8 +90,10 @@ public final class TongjiHTTPClient: @unchecked Sendable {
         let data = try await data(for: request, endpoint: .oneSystem)
         let payload = try JSONDecoder().decode(BusinessStatus.self, from: data)
         guard payload.code == 200 else {
+            print("[OneSystemHTTP] 上下文切换失败 authId=\(context.rawValue) code=\(payload.code.map(String.init) ?? "nil") msg=\(Self.redacted(payload.msg))")
             throw AuthError.loginFlowFailed(payload.msg?.nilIfEmpty ?? "切换教务上下文失败")
         }
+        print("[OneSystemHTTP] 上下文切换成功 authId=\(context.rawValue)")
     }
 
     private func makeURL(
@@ -136,13 +139,48 @@ public final class TongjiHTTPClient: @unchecked Sendable {
     private func applyAuthHeaders(to request: inout URLRequest, endpoint: EndpointKind) throws {
         switch endpoint {
         case .oneSystem:
-            guard let cookie = oneSystemCookieHeader(), !cookie.isEmpty else {
-                throw AuthError.notLoggedIn("未找到登录凭证，请先完成登录")
+            let cookieSnapshot = oneSystemCookieSnapshot()
+            var sessionId = store.get(CredentialStore.Keys.tongjiSessionId)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !cookieSnapshot.header.isEmpty else {
+                logOneSystemAuth(
+                    request: request,
+                    cookieSource: cookieSnapshot.source,
+                    cookieLength: 0,
+                    cookieNames: cookieSnapshot.names,
+                    xTokenLength: sessionId.count,
+                    reason: "missing-cookie"
+                )
+                throw AuthError.expired("未找到一系统 Cookie，尝试恢复登录")
             }
-            request.setValue(cookie, forHTTPHeaderField: "Cookie")
-            if let sessionId = store.get(CredentialStore.Keys.tongjiSessionId), !sessionId.isEmpty {
-                request.setValue(sessionId, forHTTPHeaderField: "X-Token")
+            if sessionId.isEmpty,
+               let cookieSessionId = Self.cookieValue(named: "sessionid", in: cookieSnapshot.header),
+               !cookieSessionId.isEmpty {
+                sessionId = cookieSessionId
+                store.set(cookieSessionId, for: CredentialStore.Keys.tongjiSessionId)
+                print("[OneSystemHTTP] 已从 Cookie 回填 X-Token，len=\(cookieSessionId.count)")
             }
+            guard !sessionId.isEmpty else {
+                logOneSystemAuth(
+                    request: request,
+                    cookieSource: cookieSnapshot.source,
+                    cookieLength: cookieSnapshot.header.count,
+                    cookieNames: cookieSnapshot.names,
+                    xTokenLength: 0,
+                    reason: "missing-x-token"
+                )
+                throw AuthError.expired("缺少一系统 X-Token，尝试恢复登录")
+            }
+            request.setValue(cookieSnapshot.header, forHTTPHeaderField: "Cookie")
+            request.setValue(sessionId, forHTTPHeaderField: "X-Token")
+            logOneSystemAuth(
+                request: request,
+                cookieSource: cookieSnapshot.source,
+                cookieLength: cookieSnapshot.header.count,
+                cookieNames: cookieSnapshot.names,
+                xTokenLength: sessionId.count,
+                reason: "ready"
+            )
         case .star:
             if let token = validStoredToken(CredentialStore.Keys.starBearerToken, minLength: 20) {
                 request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -165,10 +203,23 @@ public final class TongjiHTTPClient: @unchecked Sendable {
         }
     }
 
-    private func oneSystemCookieHeader() -> String? {
+    private func oneSystemCookieSnapshot() -> OneSystemCookieSnapshot {
         let fromJar = CookieJar.shared.loadHeader(for: EndpointKind.oneSystem.baseURL)
-        if !fromJar.isEmpty { return fromJar }
-        return store.get(CredentialStore.Keys.tongjiCookies)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !fromJar.isEmpty {
+            return OneSystemCookieSnapshot(
+                header: fromJar,
+                source: "CookieJar",
+                names: Self.cookieNames(from: fromJar)
+            )
+        }
+        let legacy = store.get(CredentialStore.Keys.tongjiCookies)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return OneSystemCookieSnapshot(
+            header: legacy,
+            source: legacy.isEmpty ? "none" : "Keychain",
+            names: Self.cookieNames(from: legacy)
+        )
     }
 
     private func validStoredToken(_ key: String, minLength: Int) -> String? {
@@ -184,6 +235,9 @@ public final class TongjiHTTPClient: @unchecked Sendable {
     private func validate(response: URLResponse, data: Data?, endpoint: EndpointKind) throws {
         guard let http = response as? HTTPURLResponse else { return }
         mergeSetCookieFields(from: http, endpoint: endpoint)
+        if endpoint == .oneSystem {
+            logOneSystemResponse(http: http, data: data)
+        }
         if http.statusCode == 401 || http.statusCode == 403 {
             throw AuthError.expired("\(endpoint.logName) 凭证已失效")
         }
@@ -216,6 +270,8 @@ public final class TongjiHTTPClient: @unchecked Sendable {
             return
         }
         CookieJar.shared.mergeSetCookieFields(fields, for: url)
+        let cookieNames = Self.setCookieNames(from: fields)
+        print("[OneSystemHTTP] Set-Cookie 已回写 path=\(url.path) names=\(Self.joinedNames(cookieNames))")
     }
 
     private func log(endpoint: EndpointKind, response: HTTPURLResponse, status: BusinessStatus) {
@@ -242,6 +298,112 @@ public final class TongjiHTTPClient: @unchecked Sendable {
         guard message.count > 80 else { return message }
         return String(message.prefix(80)) + "..."
     }
+
+    private func logOneSystemAuth(
+        request: URLRequest,
+        cookieSource: String,
+        cookieLength: Int,
+        cookieNames: [String],
+        xTokenLength: Int,
+        reason: String
+    ) {
+        let url = request.url
+        let path = url?.path ?? "<unknown>"
+        let queryKeys = Self.queryKeys(from: url)
+        let method = request.httpMethod ?? "GET"
+        print(
+            "[OneSystemHTTP] 鉴权 \(reason) \(method) \(path) queryKeys=\(Self.joinedNames(queryKeys)) cookieSource=\(cookieSource) cookieLen=\(cookieLength) cookieNames=\(Self.joinedNames(cookieNames)) xToken=\(xTokenLength > 0) xTokenLen=\(xTokenLength)"
+        )
+    }
+
+    private func logOneSystemResponse(http: HTTPURLResponse, data: Data?) {
+        let path = http.url?.path ?? "<unknown>"
+        let status: BusinessStatus? = data.flatMap { try? JSONDecoder().decode(BusinessStatus.self, from: $0) }
+        let code = status?.code.map(String.init) ?? "nil"
+        let message = Self.redacted(status?.msg)
+        let setCookieNames = Self.setCookieNames(from: http.allHeaderFields)
+        print(
+            "[OneSystemHTTP] 响应 \(path) HTTP \(http.statusCode) code=\(code) msg=\(message) bytes=\(data?.count ?? 0) setCookieNames=\(Self.joinedNames(setCookieNames))"
+        )
+    }
+
+    private static func queryKeys(from url: URL?) -> [String] {
+        guard let url,
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let items = components.queryItems else {
+            return []
+        }
+        return items.map(\.name).sorted()
+    }
+
+    private static func cookieNames(from header: String) -> [String] {
+        header
+            .split(separator: ";")
+            .compactMap { segment -> String? in
+                let pieces = segment.split(separator: "=", maxSplits: 1)
+                guard let name = pieces.first?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                      !name.isEmpty else {
+                    return nil
+                }
+                return name
+            }
+            .sorted()
+    }
+
+    private static func cookieValue(named targetName: String, in header: String) -> String? {
+        for segment in header.split(separator: ";") {
+            let pieces = segment.split(separator: "=", maxSplits: 1)
+            guard pieces.count == 2 else { continue }
+            let name = pieces[0].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard name.caseInsensitiveCompare(targetName) == .orderedSame else { continue }
+            let value = pieces[1].trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.isEmpty ? nil : value
+        }
+        return nil
+    }
+
+    private static func setCookieNames(from fields: [AnyHashable: Any]) -> [String] {
+        var names: [String] = []
+        for (key, value) in fields {
+            guard let key = key as? String,
+                  key.caseInsensitiveCompare("Set-Cookie") == .orderedSame else {
+                continue
+            }
+            let raw = "\(value)"
+            names.append(contentsOf: raw
+                .split(separator: ",")
+                .compactMap { chunk -> String? in
+                    let firstPair = chunk.split(separator: ";", maxSplits: 1).first ?? ""
+                    let pieces = firstPair.split(separator: "=", maxSplits: 1)
+                    guard let name = pieces.first?
+                        .trimmingCharacters(in: .whitespacesAndNewlines),
+                          !name.isEmpty else {
+                        return nil
+                    }
+                    return name
+                })
+        }
+        return names.sorted()
+    }
+
+    private static func setCookieNames(from fields: [String: String]) -> [String] {
+        var normalized: [AnyHashable: Any] = [:]
+        for (key, value) in fields {
+            normalized[key] = value
+        }
+        return setCookieNames(from: normalized)
+    }
+
+    private static func joinedNames(_ values: [String]) -> String {
+        values.isEmpty ? "<empty>" : values.joined(separator: ",")
+    }
+}
+
+private struct OneSystemCookieSnapshot {
+    let header: String
+    let source: String
+    let names: [String]
 }
 
 private struct OneSystemAuthContextRequest: Encodable {

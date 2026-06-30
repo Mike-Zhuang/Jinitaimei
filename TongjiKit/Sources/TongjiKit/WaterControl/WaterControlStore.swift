@@ -83,9 +83,6 @@ public final class WaterControlStore: ObservableObject, CampusLocalStore {
     public func syncControllers(for group: WaterControlGroup, force: Bool = false) async {
         if loadingGroupIds.contains(group.id) { return }
         if !force, devicesByGroup[group.id]?.isEmpty == false { return }
-        if !force, groupErrors[group.id] != nil {
-            return
-        }
         loadingGroupIds.insert(group.id)
         defer { loadingGroupIds.remove(group.id) }
         setGroupError(nil, groupId: group.id, canRenewAuth: false)
@@ -212,7 +209,9 @@ public final class WaterControlStore: ObservableObject, CampusLocalStore {
         switch error {
         case .notLoggedIn, .expired:
             setGroupError(message, groupId: groupId, canRenewAuth: true)
-            record(message: message, canRenewAuth: true)
+            if groups.isEmpty {
+                record(message: message, canRenewAuth: true)
+            }
         case .loginFlowFailed, .mfaRequired:
             setGroupError(message, groupId: groupId, canRenewAuth: false)
             break

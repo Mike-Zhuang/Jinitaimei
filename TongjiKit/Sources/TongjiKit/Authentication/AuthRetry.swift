@@ -15,7 +15,9 @@ public func withAuthRetry<T: Sendable>(
     do {
         return try await body()
     } catch let error as AuthError where error.isExpired {
+        print("[AuthRetry] 一系统请求判定凭证失效，启动统一恢复")
         let renewed = await AuthRecoveryManager.shared.renewIfPossible()
+        print("[AuthRetry] 一系统恢复结果 renewed=\(renewed)")
         guard renewed else { throw error }
         return try await body()
     }

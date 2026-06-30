@@ -11,21 +11,29 @@ public final class AcademicAPI {
     }
 
     public func fetchExams() async throws -> TongjiExamFetchResult {
-        try await withAuthRetry { [self] in
+        print("[AcademicAPI] 开始同步考试安排")
+        return try await withAuthRetry { [self] in
             try await fetchExamsOnce()
         }
     }
 
     public func fetchGrades() async throws -> TongjiGradeFetchResult {
-        try await withAuthRetry { [self] in
+        print("[AcademicAPI] 开始同步课程成绩")
+        return try await withAuthRetry { [self] in
             try await fetchGradesOnce()
         }
     }
 
     private func fetchExamsOnce() async throws -> TongjiExamFetchResult {
+        print("[AcademicAPI] 考试：切换一系统上下文 authId=\(TongjiHTTPClient.OneSystemAuthContext.examSchedule.rawValue)")
         try await httpClient.switchOneSystemAuthContext(.examSchedule)
         let calendar = try await fetchExamCalendar()
+        print("[AcademicAPI] 考试：使用学期 calendarId=\(calendar.calendarId) name=\(calendar.calendarName)")
         let items = try await fetchExamItems(calendarId: calendar.calendarId)
+        let scheduledCount = items.items.filter {
+            !$0.examDateText.isEmpty && !$0.startTimeText.isEmpty && !$0.endTimeText.isEmpty
+        }.count
+        print("[AcademicAPI] 考试：同步完成 scheduled=\(scheduledCount) total=\(items.items.count)")
         return TongjiExamFetchResult(
             calendarId: calendar.calendarId,
             calendarName: calendar.calendarName,
@@ -36,14 +44,18 @@ public final class AcademicAPI {
 
     private func fetchGradesOnce() async throws -> TongjiGradeFetchResult {
         guard let studentId = store.get(CredentialStore.Keys.tongjiUid), !studentId.isEmpty else {
+            print("[AcademicAPI] 成绩：缺少学号，无法发起请求")
             throw AuthError.notLoggedIn("缺少学号，请重新登录校园账户")
         }
+        print("[AcademicAPI] 成绩：切换一系统上下文 authId=\(TongjiHTTPClient.OneSystemAuthContext.gradeReport.rawValue) studentIdLen=\(studentId.count)")
         try await httpClient.switchOneSystemAuthContext(.gradeReport)
         let tags = try await fetchCourseTags(studentId: studentId)
+        print("[AcademicAPI] 成绩：课程标签映射 count=\(tags.count)")
         return try await fetchGradeSummary(studentId: studentId, tags: tags)
     }
 
     private func fetchExamCalendar() async throws -> ExamCalendarInfo {
+        print("[AcademicAPI] 考试：请求考试学期")
         let request = try httpClient.request(
             endpoint: .oneSystem,
             path: "/api/electionservice/underGraduateExamSwitch/getExamCalendar?examType=1&switchType=null",
@@ -55,8 +67,10 @@ public final class AcademicAPI {
         let data = try await httpClient.data(for: request, endpoint: .oneSystem)
         let payload = try JSONDecoder().decode(ExamCalendarResponse.self, from: data)
         guard payload.code == 200, let calendar = payload.data else {
+            print("[AcademicAPI] 考试学期响应异常 code=\(payload.code) msg=\(payload.msg.isEmpty ? "<empty>" : payload.msg)")
             throw AuthError.loginFlowFailed(payload.msg.isEmpty ? "考试学期响应异常" : payload.msg)
         }
+        print("[AcademicAPI] 考试学期获取成功 calendarId=\(calendar.calendarId) name=\(calendar.calendarIdI18n)")
         return ExamCalendarInfo(
             calendarId: calendar.calendarId,
             calendarName: calendar.calendarIdI18n
@@ -69,6 +83,7 @@ public final class AcademicAPI {
         var switchRemark = ""
 
         while true {
+            print("[AcademicAPI] 考试：请求列表 calendarId=\(calendarId) page=\(page)")
             let body = try JSONEncoder().encode(
                 ExamListRequest(
                     pageNum: page,
@@ -86,6 +101,7 @@ public final class AcademicAPI {
             let data = try await httpClient.data(for: request, endpoint: .oneSystem)
             let payload = try JSONDecoder().decode(ExamListResponse.self, from: data)
             guard payload.code == 200, let wrapper = payload.data else {
+                print("[AcademicAPI] 考试列表响应异常 page=\(page) code=\(payload.code) msg=\(payload.msg.isEmpty ? "<empty>" : payload.msg)")
                 throw AuthError.loginFlowFailed(payload.msg.isEmpty ? "考试安排响应异常" : payload.msg)
             }
 
@@ -93,7 +109,7 @@ public final class AcademicAPI {
                 switchRemark = wrapper.switchRrmark ?? ""
             }
             let pageData = wrapper.data
-            all.append(contentsOf: pageData.list.map { row in
+            let mapped = pageData.list.map { row in
                 TongjiExamItem(
                     sourceId: row.id ?? stableId(row.newCourseCode, row.newTeachingClassCode, row.courseName),
                     courseName: row.courseName ?? "",
@@ -108,7 +124,9 @@ public final class AcademicAPI {
                     examSituation: row.examSituation ?? 0,
                     isOpen: row.isOpen ?? 0
                 )
-            })
+            }
+            all.append(contentsOf: mapped)
+            print("[AcademicAPI] 考试：列表 page=\(pageData.pageNum) count=\(mapped.count) total=\(pageData.total) cumulative=\(all.count)")
 
             guard pageData.pageNum * pageData.pageSize < pageData.total else { break }
             page += 1
@@ -118,6 +136,7 @@ public final class AcademicAPI {
     }
 
     private func fetchCourseTags(studentId: String) async throws -> [String: String] {
+        print("[AcademicAPI] 成绩：请求课程标签 studentIdLen=\(studentId.count)")
         let timestamp = Int(Date().timeIntervalSince1970 * 1000)
         let request = try httpClient.request(
             endpoint: .oneSystem,
@@ -132,6 +151,7 @@ public final class AcademicAPI {
         let data = try await httpClient.data(for: request, endpoint: .oneSystem)
         let payload = try JSONDecoder().decode(CourseTagResponse.self, from: data)
         guard payload.code == 200 else {
+            print("[AcademicAPI] 课程标签响应异常 code=\(payload.code) msg=\(payload.msg.isEmpty ? "<empty>" : payload.msg)")
             throw AuthError.loginFlowFailed(payload.msg.isEmpty ? "课程标签响应异常" : payload.msg)
         }
         var result: [String: String] = [:]
@@ -144,10 +164,12 @@ public final class AcademicAPI {
                 result[String(tag.id)] = name
             }
         }
+        print("[AcademicAPI] 成绩：课程标签获取成功 rawCount=\(payload.data?.count ?? 0) mapCount=\(result.count)")
         return result
     }
 
     private func fetchGradeSummary(studentId: String, tags: [String: String]) async throws -> TongjiGradeFetchResult {
+        print("[AcademicAPI] 成绩：请求成绩汇总 studentIdLen=\(studentId.count) tagCount=\(tags.count)")
         let timestamp = Int(Date().timeIntervalSince1970 * 1000)
         let request = try httpClient.request(
             endpoint: .oneSystem,
@@ -162,8 +184,14 @@ public final class AcademicAPI {
         let data = try await httpClient.data(for: request, endpoint: .oneSystem)
         let payload = try JSONDecoder().decode(GradeResponse.self, from: data)
         guard payload.code == 200, let data = payload.data else {
+            print("[AcademicAPI] 成绩汇总响应异常 code=\(payload.code) msg=\(payload.msg.isEmpty ? "<empty>" : payload.msg)")
             throw AuthError.loginFlowFailed(payload.msg.isEmpty ? "成绩响应异常" : payload.msg)
         }
+        let terms = data.term ?? []
+        let courseCount = terms.reduce(0) { partial, term in
+            partial + (term.creditInfo?.count ?? 0)
+        }
+        print("[AcademicAPI] 成绩：汇总获取成功 terms=\(terms.count) courses=\(courseCount) hasGPA=\((data.totalGradePoint ?? "").isEmpty == false) hasCredit=\((data.actualCredit ?? "").isEmpty == false)")
 
         return TongjiGradeFetchResult(
             summary: TongjiGradeSummary(
@@ -172,7 +200,7 @@ public final class AcademicAPI {
                 failingCredits: data.failingCredits ?? "",
                 failingCourseCount: data.failingCourseCount ?? ""
             ),
-            terms: (data.term ?? []).map { term in
+            terms: terms.map { term in
                 TongjiGradeTerm(
                     termCode: term.termcode ?? 0,
                     termName: term.termName ?? "",

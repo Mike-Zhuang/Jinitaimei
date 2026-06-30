@@ -45,6 +45,7 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
     private let logger = Logger(subsystem: "com.jinitaimei.app", category: "Auth")
 
     private let tongjiLandingURL = URL(string: "https://1.tongji.edu.cn/workbench")!
+    private let tongjiSSOLoginURL = URL(string: "https://1.tongji.edu.cn/ssologin")!
 
     private var hasVisitedSSO = false
     private var tongjiExtracted = false
@@ -177,6 +178,7 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
             Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: 12_000_000_000)
                 guard let self else { return }
+                guard self.currentMode == .silent else { return }
                 if let c = self.silentRenewContinuation {
                     self.silentRenewContinuation = nil
                     self.extractionTask?.cancel()
@@ -191,8 +193,7 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
 
     /// 密码自动回填续期。在 silent 模式 webview 上跑，结束后报告成功/失败/MFA。
     ///
-    /// 流程：清掉 IAM 域 cookie（这是关键——只有 IAM cookie 失效时才会被调用，
-    /// 旧 cookie 反而会让我们卡在"IAM 试图跳回但被自家中间页拦"），重新 load workbench
+    /// 流程：清掉一系统 / IAM 旧状态，主动加载 `/ssologin` 发起 IAM 授权
     /// → IAM 弹出表单 → JS 自动填表提交 → 等待跳回 workbench。
     public func attemptPasswordRelogin(username: String, password: String) async throws -> Bool {
         guard !username.isEmpty, !password.isEmpty else { return false }
@@ -202,36 +203,100 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
         capturedUsername = username  // 记下来以便复用 capture 逻辑
         capturedPassword = password
 
-        // 先把 Keychain 中还有效的同济 Cookie 回灌，再清 IAM 域旧 Cookie。
-        // 这样既保留 1.tongji/all.tongji 的状态，又能让 IAM 重新出表单。
+        // 先把 Keychain 中还有效的同济 Cookie 回灌，再清掉一系统与 IAM 域旧状态。
+        // L2 本来就是 L1 已经失败后的兜底，如果继续保留 1.tongji.edu.cn 的
+        // 旧 Cookie / localStorage，workbench 可能直接呈现旧 SPA 并让我们抽到
+        // 已失效的 sessiondata，根本进不到 IAM 表单。
         await restoreStoredTongjiCookiesToWebView()
+        await clearCookies(forDomainSuffix: "1.tongji.edu.cn")
         await clearCookies(forDomainSuffix: "iam.tongji.edu.cn")
         await clearCookies(forDomainSuffix: "ids.tongji.edu.cn")
+        await clearCurrentTongjiWebStorageIfPossible()
 
-        webView.load(URLRequest(url: tongjiLandingURL))
+        var request = URLRequest(url: tongjiSSOLoginURL)
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        webView.stopLoading()
+        log("密码回填进入一系统 SSO 入口：\(tongjiSSOLoginURL.absoluteString)")
+        webView.load(request)
 
-        // 监听 5 秒：如果到了 IAM 表单页面就注入填表。提交一次即可，避免重复点击。
+        // 先短等一段时间：如果很快到了 IAM 表单就立即提交。
+        // 真机日志里出现过 /ssologin 长时间停留后才继续跳 IAM 的情况，
+        // 因此这里不能把“前置等待结束”当成最终失败；后面 continuation
+        // 建立后还会继续轮询表单。
         var didSubmit = false
-        for _ in 0..<25 {
+        var lastProbe = ""
+        var shouldStartExtractionAfterContinuation = false
+        for _ in 0..<50 {
             try? await Task.sleep(nanoseconds: 200_000_000)
+            if Task.isCancelled { return false }
             if !didSubmit, let url = webView.url, isOnSSO(url) {
-                if try await detectMFAOrFillAndSubmit(username: username, password: password) {
+                let attempt = try await detectMFAOrFillAndSubmit(username: username, password: password)
+                lastProbe = attempt.probe
+                if attempt.submitted {
                     didSubmit = true
                     break
                 }
             }
-            // 若 IAM cookie 其实还没过期，可能直接跳回 workbench
+            // 若 IAM cookie 其实还没过期，可能直接跳回 workbench。主动启动抽取，
+            // 避免隐藏 WebView URL 未变化时 KVO 没有再次触发。
             if let url = webView.url, isOnTongjiWorkbench(url) {
+                shouldStartExtractionAfterContinuation = true
                 break
             }
+        }
+        if !didSubmit, !shouldStartExtractionAfterContinuation {
+            let current = webView.url?.absoluteString ?? "<nil>"
+            log("  密码回填等待表单超时，未提交 current=\(current) probe=\(lastProbe.isEmpty ? "<empty>" : lastProbe)")
         }
 
         // 后续依赖普通流程：handleURLChange 检测到 workbench 后会抽取并 resume continuation
         return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             silentRenewContinuation = continuation
+            if shouldStartExtractionAfterContinuation, extractionTask == nil {
+                startTongjiExtraction()
+            }
+            if !didSubmit {
+                Task { @MainActor [weak self] in
+                    var postContinuationProbe = lastProbe
+                    for _ in 0..<250 {
+                        try? await Task.sleep(nanoseconds: 200_000_000)
+                        guard let self,
+                              self.currentMode == .passwordFill,
+                              self.silentRenewContinuation != nil else { return }
+                        if let url = self.webView.url, self.isOnSSO(url) {
+                            do {
+                                let attempt = try await self.detectMFAOrFillAndSubmit(username: username, password: password)
+                                postContinuationProbe = attempt.probe
+                                if attempt.submitted {
+                                    self.log("  密码回填后续轮询已提交表单")
+                                    return
+                                }
+                            } catch {
+                                self.log("  密码回填后续轮询失败: \(error.localizedDescription)")
+                                if let c = self.silentRenewContinuation {
+                                    self.silentRenewContinuation = nil
+                                    self.extractionTask?.cancel()
+                                    self.extractionTask = nil
+                                    self.stage = .failed(error.localizedDescription)
+                                    c.resume(returning: false)
+                                }
+                                return
+                            }
+                        }
+                        if let url = self.webView.url, self.isOnTongjiWorkbench(url) {
+                            if self.extractionTask == nil {
+                                self.startTongjiExtraction()
+                            }
+                            return
+                        }
+                    }
+                    self?.log("  密码回填后续轮询结束，仍未提交表单 probe=\(postContinuationProbe.isEmpty ? "<empty>" : postContinuationProbe)")
+                }
+            }
             Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                try? await Task.sleep(nanoseconds: 60_000_000_000)
                 guard let self else { return }
+                guard self.currentMode == .passwordFill else { return }
                 if let c = self.silentRenewContinuation {
                     self.silentRenewContinuation = nil
                     self.extractionTask?.cancel()
@@ -325,6 +390,10 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
 
     private func extractWithRetry() async -> Bool {
         for attempt in 1...12 {
+            if Task.isCancelled {
+                log("一系统抽取任务已取消")
+                return false
+            }
             log("抽取尝试 #\(attempt)")
             if await tryExtractOnce() {
                 tongjiExtracted = true
@@ -332,6 +401,10 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
                 return true
             }
             try? await Task.sleep(nanoseconds: 1_000_000_000)
+            if Task.isCancelled {
+                log("一系统抽取任务已取消")
+                return false
+            }
         }
         log("一系统抽取失败：12 秒内 sessiondata.uid 始终为空")
         return false
@@ -339,6 +412,7 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
 
     private func tryExtractOnce() async -> Bool {
         // Cookie 先用 native 拿（含 HttpOnly），失败再 fallback 到 JS
+        if Task.isCancelled { return false }
         let nativeCookies = await collectNativeCookies()
         CookieJar.shared.mergeNative(nativeCookies)
 
@@ -386,12 +460,20 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
         // 抓一下用户在表单里填的账号密码（用户内存，由 LoginPage 决定是否落 Keychain）
         await captureFormCredentials()
 
-        // 顺手刷新个人资料（拿不到不阻塞登录完成）
+        // 校验刚抽到的一系统凭证。这里不能只看 sessiondata 是否存在：
+        // 真机掉线后旧 SPA 里可能还留着 uid/aesKey/aesIv，但 X-Token/Cookie 已经失效。
+        // 如果把这种旧状态当成续期成功，后续业务会继续拿坏凭证请求，L2 也不会被触发。
         do {
             _ = try await SessionAPI(store: store).refreshSessionUserOnce()
             log("  个人信息已拉取")
         } catch {
-            log("  个人信息拉取失败: \(error.localizedDescription)")
+            if Task.isCancelled {
+                log("  个人信息校验已取消，停止本轮抽取")
+                return false
+            }
+            log("  个人信息校验失败，抽取作废: \(error.localizedDescription)")
+            await clearTransientOneSystemCredentials(reason: "profile_validation_failed")
+            return false
         }
 
         Task { @MainActor [weak self] in
@@ -521,8 +603,8 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
 
     // MARK: - 密码回填 / MFA 检测
 
-    /// 返回 true 表示已经提交了表单；false 表示页面还没准备好。
-    private func detectMFAOrFillAndSubmit(username: String, password: String) async throws -> Bool {
+    /// 返回本轮是否已经提交表单，以及页面探测摘要；未准备好时不立刻判失败。
+    private func detectMFAOrFillAndSubmit(username: String, password: String) async throws -> FillAttempt {
         // 先看是否有"可见"账号密码框。统一认证页经常预埋隐藏的 code/otp 字段，
         // 如果先扫 OTP 很容易误判成二次验证。
         let pageProbeJS = """
@@ -555,8 +637,13 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
         """
         let probeRaw = try? await webView.evaluateJavaScript(pageProbeJS)
         let probe = JSONUtils.normalizeJavaScriptValue(probeRaw) ?? ""
+        let redacted = redactedProbe(probe)
         let formReady = probe.contains("\"formReady\":true")
-        guard formReady else { return false }
+        guard formReady else { return FillAttempt(submitted: false, probe: redacted) }
+        if probe.contains("\"captcha\":true") || probe.contains("\"otp\":true") || probe.contains("\"urlMfa\":true") {
+            log("  IAM 页面需要验证码 / MFA，probe=\(redactedProbe(probe))")
+            throw AuthError.mfaRequired("IAM 页面需要验证码 / MFA")
+        }
 
         // 注入填表并提交
         let safeUser = escapeForJSString(username)
@@ -605,7 +692,12 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
         if submitted {
             log("  已注入密码并提交表单")
         }
-        return submitted
+        return FillAttempt(submitted: submitted, probe: redacted)
+    }
+
+    private func redactedProbe(_ probe: String) -> String {
+        guard !probe.isEmpty else { return "<empty>" }
+        return probe.count > 180 ? String(probe.prefix(180)) + "..." : probe
     }
 
     private func escapeForJSString(_ s: String) -> String {
@@ -638,12 +730,51 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
         }
     }
 
+    private func clearTransientOneSystemCredentials(reason: String) async {
+        store.remove(CredentialStore.Keys.tongjiCookies)
+        store.remove(CredentialStore.Keys.tongjiSessionId)
+        store.remove(CredentialStore.Keys.tongjiStudentCode)
+        store.remove(CredentialStore.Keys.tongjiAesKey)
+        store.remove(CredentialStore.Keys.tongjiAesIv)
+        await clearCookies(forDomainSuffix: "1.tongji.edu.cn")
+        log("已清理一系统失效临时凭证 reason=\(reason)")
+    }
+
+    private func clearCurrentTongjiWebStorageIfPossible() async {
+        guard let host = webView.url?.host?.lowercased(),
+              host.hasSuffix("tongji.edu.cn") else {
+            return
+        }
+        let script = """
+        (function() {
+            try { localStorage.clear(); } catch (e) {}
+            try { sessionStorage.clear(); } catch (e) {}
+            return true;
+        })();
+        """
+        _ = try? await webView.evaluateJavaScript(script)
+        log("已清理当前同济页面 WebStorage host=\(host)")
+    }
+
     private func clearCookies(forDomainSuffix suffix: String) async {
         let removedFromJar = CookieJar.shared.removeCookies(domainSuffix: suffix)
         if removedFromJar > 0 {
             log("已从 CookieJar 清理 \(suffix) Cookie，count=\(removedFromJar)")
         }
         let dataStore = webView.configuration.websiteDataStore
+        let cookieStore = dataStore.httpCookieStore
+        let suffixLower = suffix.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        let cookies = await cookieStore.allCookies()
+        let matchedCookies = cookies.filter { cookie in
+            let domain = cookie.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            return domain == suffixLower || domain.hasSuffix("." + suffixLower)
+        }
+        for cookie in matchedCookies {
+            await deleteCookie(cookie, from: cookieStore)
+        }
+        if !matchedCookies.isEmpty {
+            log("已从 WKCookieStore 清理 \(suffix) Cookie，count=\(matchedCookies.count)")
+        }
         let records = await dataStore.dataRecords(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes())
         let matched = records.filter { $0.displayName.lowercased().hasSuffix(suffix.lowercased()) }
         await dataStore.removeData(
@@ -652,11 +783,24 @@ public final class TongjiAuthCoordinator: NSObject, ObservableObject {
         )
     }
 
+    private func deleteCookie(_ cookie: HTTPCookie, from cookieStore: WKHTTPCookieStore) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            cookieStore.delete(cookie) {
+                continuation.resume()
+            }
+        }
+    }
+
     private func log(_ message: String) {
         let line = "[Auth] \(message)"
         print(line)
         logger.info("\(line, privacy: .public)")
     }
+}
+
+private struct FillAttempt {
+    let submitted: Bool
+    let probe: String
 }
 
 private final class AllTongjiSSOWarmUpDelegate: NSObject, WKNavigationDelegate {

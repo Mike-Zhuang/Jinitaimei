@@ -16,6 +16,7 @@
 | 校园 | 课程成绩（总绩点、学分、不及格统计、分学期成绩、课程详情） | 一系统 `1.tongji.edu.cn` `scoreGrades` + `queryCourseTag` | v0.1 可用 |
 | 校园 | 图书馆座位（四个重点馆座位占用概览、区域座位图、研习室三天空闲时段、单人单座本地标签） | 图书馆空间系统 `space.tongji.edu.cn` | v0.1 可用 |
 | 校园 | 智能控水（分组、控水器空闲 / 使用中 / 异常只读状态、置顶摘要） | 智能控水 `ks.tongji.edu.cn` + 校园卡 `pay-yikatong.tongji.edu.cn` | v0.1 可用 |
+| 校园 | 宿舍洗衣机（附近洗衣房、单房间机器空闲 / 运行中 / 离线状态、常用洗衣房摘要） | CoolEasy `wx2.cooleasy.net` | v0.1 可用 |
 | 设置 | 校园账户登录、账户信息、退出登录、自动登录开关、邮件推送与低余额阈值 | 同济统一身份认证 + 一系统 session 用户信息 | v0.1 可用 |
 
 登录方式：**仅同济统一身份认证（iam/ids.tongji.edu.cn）**。用户从 `设置 → 校园账户` 进入登录页，在 WebView 内完成一次 SSO 后，App 会在同一个 WebView 内于遮罩下后台抓取凭证（Cookie + sessionid + AES 加密 studentCode）。STAR 平台的活动列表为公开接口，无需额外登录；个人星值用独立的 Bearer Token，由 `StarAuthCoordinator` 单独维护。
@@ -110,6 +111,12 @@ GET https://ks.tongji.edu.cn/waterapi/api/AccUseHzWatch?info=...&token=...
 
 `info` 使用与 Android 下游一致的 `AES/ECB/PKCS7` 加密；分组页先拉分组，展开某个分组时才懒加载该组控水器，避免一次性请求所有设备。
 
+### 宿舍洗衣机
+
+洗衣机功能只读展示，不提交预约、排队、支付、扫码、启动或停止洗衣请求。数据来自 `https://wx2.cooleasy.net` 的 CoolEasy 微信网页接口，不依赖同济统一认证，但依赖 CoolEasy 自己的微信网页会话 Cookie（关键为 `loginStatusId`）。App 会保存并滚动更新 CoolEasy 同站 Cookie；有可用会话时，先打开洗衣房页面抽取网页 `__RequestVerificationToken`，再请求附近洗衣房列表；展开某个洗衣房时再抽取该详情页 token 并拉取该房间机器状态。
+
+首版默认使用四平路附近坐标 `121.498886, 31.28323` 拉取附近洗衣房，不请求系统定位权限。页面支持把常用洗衣房置顶，首页卡片和详情页会优先同步这个洗衣房；未展开的宿舍不会批量拉取机器列表。
+
 更多协议与行为约定见 [docs/PROTOCOLS.md](docs/PROTOCOLS.md) 和 [docs/FEATURE-BEHAVIOR.md](docs/FEATURE-BEHAVIOR.md)。
 
 ## 暂未实现 / 不计划在 v0.1 实现
@@ -136,6 +143,7 @@ Jinitaimei/
 │       ├── Wallet/            # 校园卡余额与消费记录 API / 登录续期 / SwiftData 快照
 │       ├── LibrarySpace/      # 图书馆空间系统 API / JWT 续期 / 座位与研习室模型 / SwiftData 概览缓存
 │       ├── WaterControl/      # 智能控水 API / AES-ECB 加密 / 参数提取 / SwiftData 快照
+│       ├── Laundry/           # 宿舍洗衣机网页 token / 洗衣房与机器状态 / SwiftData 快照
 │       ├── Notification/      # 本地通知、偏好与变化检测
 │       ├── Push/              # 邮件推送订阅 API
 │       ├── Profile/           # 一系统 session 用户信息

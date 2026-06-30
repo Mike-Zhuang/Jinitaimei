@@ -58,6 +58,7 @@ public final class ExamScheduleStore: ObservableObject, CampusLocalStore {
     }
 
     public func sync() async {
+        print("[ExamStore] 开始同步考试安排")
         isLoading = true
         defer { isLoading = false }
         lastError = nil
@@ -92,15 +93,21 @@ public final class ExamScheduleStore: ObservableObject, CampusLocalStore {
             try context.save()
             loadFromLocal()
             notifyDataDidChange()
+            print("[ExamStore] 考试安排同步成功 count=\(exams.count) scheduled=\(scheduledExams.count)")
         } catch let error as AuthError {
             lastError = error.errorDescription
+            let message = error.errorDescription ?? String(describing: error)
+            print("[ExamStore] 考试安排同步失败 authError=\(message)")
         } catch {
             lastError = error.localizedDescription
+            print("[ExamStore] 考试安排同步失败 error=\(error.localizedDescription)")
         }
     }
 
     public func clearError() {
-        lastError = nil
+        DispatchQueue.main.async { [weak self] in
+            self?.lastError = nil
+        }
     }
 
     public func clearLocalData() {
@@ -188,6 +195,7 @@ public final class GradeStore: ObservableObject, CampusLocalStore {
     }
 
     public func sync() async {
+        print("[GradeStore] 开始同步课程成绩")
         isLoading = true
         defer { isLoading = false }
         lastError = nil
@@ -234,15 +242,21 @@ public final class GradeStore: ObservableObject, CampusLocalStore {
             try context.save()
             loadFromLocal()
             notifyDataDidChange()
+            print("[GradeStore] 课程成绩同步成功 terms=\(terms.count) courses=\(courses.count)")
         } catch let error as AuthError {
             lastError = error.errorDescription
+            let message = error.errorDescription ?? String(describing: error)
+            print("[GradeStore] 课程成绩同步失败 authError=\(message)")
         } catch {
             lastError = error.localizedDescription
+            print("[GradeStore] 课程成绩同步失败 error=\(error.localizedDescription)")
         }
     }
 
     public func clearError() {
-        lastError = nil
+        DispatchQueue.main.async { [weak self] in
+            self?.lastError = nil
+        }
     }
 
     public func clearLocalData() {

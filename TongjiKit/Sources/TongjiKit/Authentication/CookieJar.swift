@@ -154,8 +154,10 @@ public final class CookieJar: @unchecked Sendable {
         var restored = 0
         for cookie in cookies {
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                cookieStore.setCookie(cookie) {
-                    continuation.resume()
+                Task { @MainActor in
+                    cookieStore.setCookie(cookie) {
+                        continuation.resume()
+                    }
                 }
             }
             restored += 1

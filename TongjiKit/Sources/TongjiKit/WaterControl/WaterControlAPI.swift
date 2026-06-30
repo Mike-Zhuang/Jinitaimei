@@ -33,6 +33,65 @@ public final class WaterControlAPI: @unchecked Sendable {
 
     public func fetchControllers(for group: WaterControlGroup) async throws -> [WaterControlDevice] {
         logger.debug("[Water] 开始获取控水器 groupId=\(group.id, privacy: .public) groupName=\(group.name, privacy: .public)")
+        var lastPayload: WaterControllerResponse?
+        var lastError: Error?
+
+        for attempt in 0...1 {
+            if attempt == 1 {
+                logger.debug("[Water] 控水器首次请求未成功，强制刷新 KS 参数后重试 groupId=\(group.id, privacy: .public)")
+                clearCachedToken()
+                let renewed = await WaterAuthCoordinator.shared.renewIfPossible(force: true)
+                guard renewed else {
+                    logger.debug("[Water] 控水器重试前 KS 参数刷新失败 groupId=\(group.id, privacy: .public)")
+                    break
+                }
+            }
+
+            do {
+                let payload = try await fetchControllersPayload(for: group, attempt: attempt + 1)
+                lastPayload = payload
+                if payload.retNo == 0 {
+                    logger.debug("[Water] 控水器获取成功 groupId=\(group.id, privacy: .public) count=\(payload.list.count, privacy: .public) attempt=\(attempt + 1, privacy: .public)")
+                    return payload.list.map { $0.asDevice(group: group) }
+                }
+                logger.debug("[Water] 控水器请求未成功 groupId=\(group.id, privacy: .public) attempt=\(attempt + 1, privacy: .public) ret=\(payload.retNo, privacy: .public) msg=\(Self.redacted(payload.retDsp), privacy: .public)")
+                if attempt == 0, shouldRefreshAuth(after: payload) {
+                    logger.debug("[Water] 控水器响应判定为授权/登录态问题，准备强制刷新 KS 参数 groupId=\(group.id, privacy: .public) ret=\(payload.retNo, privacy: .public) msg=\(Self.redacted(payload.retDsp), privacy: .public)")
+                    continue
+                }
+                break
+            } catch let error as AuthError {
+                lastError = error
+                if attempt == 0, shouldRefreshAuth(after: error) {
+                    logger.debug("[Water] 控水器请求抛出可恢复错误，准备强制刷新 KS 参数 groupId=\(group.id, privacy: .public) error=\(Self.redacted(error.errorDescription), privacy: .public)")
+                    continue
+                }
+                throw error
+            } catch {
+                lastError = error
+                if attempt == 0 {
+                    logger.debug("[Water] 控水器请求异常，准备强制刷新 KS 参数 groupId=\(group.id, privacy: .public) error=\(Self.redacted(error.localizedDescription), privacy: .public)")
+                    continue
+                }
+                throw error
+            }
+        }
+
+        if let payload = lastPayload {
+            do {
+                try validate(retNo: payload.retNo, message: payload.retDsp, operation: "获取水控器")
+            } catch let error as AuthError where error.isExpired {
+                clearCachedToken()
+                throw error
+            }
+        }
+        if let lastError {
+            throw lastError
+        }
+        throw AuthError.loginFlowFailed("控水器同步失败")
+    }
+
+    private func fetchControllersPayload(for group: WaterControlGroup, attempt: Int) async throws -> WaterControllerResponse {
         let params = try authParams()
         let token = try await token(for: params)
         let info = try WaterControlCipher.encryptInfo(
@@ -42,7 +101,7 @@ public final class WaterControlAPI: @unchecked Sendable {
             ],
             keyBase64: params.aesKey
         )
-        logger.debug("[Water] 控水器请求参数已生成 groupId=\(group.id, privacy: .public) variant=encrypted-groupid infoLen=\(info.count, privacy: .public) tokenLen=\(token.count, privacy: .public)")
+        logger.debug("[Water] 控水器请求参数已生成 groupId=\(group.id, privacy: .public) variant=encrypted-groupid attempt=\(attempt, privacy: .public) infoLen=\(info.count, privacy: .public) tokenLen=\(token.count, privacy: .public)")
         var payload: WaterControllerResponse = try await perform(
             path: "/waterapi/api/AccUseHzWatch",
             queryItems: [
@@ -50,9 +109,12 @@ public final class WaterControlAPI: @unchecked Sendable {
                 URLQueryItem(name: "token", value: token)
             ]
         )
+        if attempt == 1, payload.retNo != 0, shouldRefreshAuth(after: payload) {
+            logger.debug("[Water] 控水器首轮响应需要刷新 KS 参数，跳过同 token 兼容分支 groupId=\(group.id, privacy: .public) ret=\(payload.retNo, privacy: .public) msg=\(Self.redacted(payload.retDsp), privacy: .public)")
+            return payload
+        }
         if payload.retNo != 0,
-           let message = payload.retDsp,
-           Self.isReservationRestricted(message: message) {
+           shouldTryControllerCompatibilityVariants(payload) {
             payload = try await retryControllerCompatibilityVariants(
                 params: params,
                 token: token,
@@ -60,14 +122,17 @@ public final class WaterControlAPI: @unchecked Sendable {
                 currentPayload: payload
             )
         }
-        do {
-            try validate(retNo: payload.retNo, message: payload.retDsp, operation: "获取水控器")
-        } catch let error as AuthError where error.isExpired {
-            clearCachedToken()
-            throw error
+        if payload.retNo != 0,
+           shouldTryWebViewFallback(payload) {
+            logger.debug("[Water] URLSession 控水器仍被限制，尝试 WebView 同源兜底 groupId=\(group.id, privacy: .public)")
+            do {
+                let webPayload = try await fetchControllersViaWebView(info: info, token: token, group: group)
+                payload = webPayload
+            } catch {
+                logger.debug("[Water] WebView 同源控水器兜底失败 groupId=\(group.id, privacy: .public) error=\(Self.redacted(error.localizedDescription), privacy: .public)")
+            }
         }
-        logger.debug("[Water] 控水器获取成功 groupId=\(group.id, privacy: .public) count=\(payload.list.count, privacy: .public)")
-        return payload.list.map { $0.asDevice(group: group) }
+        return payload
     }
 
     private func retryControllerCompatibilityVariants(
@@ -109,7 +174,14 @@ public final class WaterControlAPI: @unchecked Sendable {
             ],
             keyBase64: params.aesKey
         )
-        return [
+        let encryptedUpperClassNo = try WaterControlCipher.encryptInfo(
+            [
+                "ano": params.account,
+                "ClassNo": group.id
+            ],
+            keyBase64: params.aesKey
+        )
+        var variants = [
             ControllerRequestVariant(
                 name: "encrypted-classno",
                 queryItems: [
@@ -134,6 +206,51 @@ public final class WaterControlAPI: @unchecked Sendable {
                 ]
             )
         ]
+        variants.insert(
+            ControllerRequestVariant(
+                name: "encrypted-ClassNo",
+                queryItems: [
+                    URLQueryItem(name: "info", value: encryptedUpperClassNo),
+                    URLQueryItem(name: "token", value: token)
+                ]
+            ),
+            at: 1
+        )
+        if let bookCode = group.bookCode?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !bookCode.isEmpty,
+           bookCode != group.id {
+            let encryptedBookCodeGroupId = try WaterControlCipher.encryptInfo(
+                [
+                    "ano": params.account,
+                    "groupid": bookCode
+                ],
+                keyBase64: params.aesKey
+            )
+            let encryptedBookCodeClassNo = try WaterControlCipher.encryptInfo(
+                [
+                    "ano": params.account,
+                    "classno": bookCode
+                ],
+                keyBase64: params.aesKey
+            )
+            variants.append(contentsOf: [
+                ControllerRequestVariant(
+                    name: "encrypted-bookCode-groupid",
+                    queryItems: [
+                        URLQueryItem(name: "info", value: encryptedBookCodeGroupId),
+                        URLQueryItem(name: "token", value: token)
+                    ]
+                ),
+                ControllerRequestVariant(
+                    name: "encrypted-bookCode-classno",
+                    queryItems: [
+                        URLQueryItem(name: "info", value: encryptedBookCodeClassNo),
+                        URLQueryItem(name: "token", value: token)
+                    ]
+                )
+            ])
+        }
+        return variants
     }
 
     private func fetchControllersViaWebView(
@@ -191,10 +308,8 @@ public final class WaterControlAPI: @unchecked Sendable {
         do {
             try validate(retNo: payload.retNo, message: payload.retDsp, operation: "获取水控 Token")
         } catch let error as AuthError {
-            if let token = reusableToken(allowStale: true) {
-                logger.debug("[Water] GetToken 失败但存在历史 Token，尝试复用 len=\(token.count, privacy: .public) error=\(Self.redacted(error.errorDescription), privacy: .public)")
-                return token
-            }
+            clearCachedToken()
+            logger.debug("[Water] GetToken 失败，已清空历史 Token error=\(Self.redacted(error.errorDescription), privacy: .public)")
             throw error
         }
         guard let token = payload.token?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -214,6 +329,43 @@ public final class WaterControlAPI: @unchecked Sendable {
         let payload = try JSONDecoder().decode(WaterTokenResponse.self, from: data)
         logger.debug("[Water] WebView 同源 GetToken 响应 ret=\(payload.retNo, privacy: .public) msg=\(Self.redacted(payload.retDsp), privacy: .public) tokenLen=\(payload.token?.count ?? 0, privacy: .public)")
         return payload
+    }
+
+    private func shouldRefreshAuth(after payload: WaterControllerResponse) -> Bool {
+        if payload.retNo == 0 { return false }
+        if payload.retNo == -12 { return true }
+        guard let message = payload.retDsp?.nilIfEmpty else { return true }
+        return Self.requiresLogin(message: message) ||
+            Self.isAuthorizationFailure(message: message) ||
+            Self.isReservationRestricted(message: message)
+    }
+
+    private func shouldRefreshAuth(after error: AuthError) -> Bool {
+        switch error {
+        case .notLoggedIn, .expired:
+            return true
+        case .loginFlowFailed:
+            let message = error.errorDescription ?? ""
+            return Self.isReservationRestricted(message: message) ||
+                Self.isAuthorizationFailure(message: message) ||
+                Self.requiresLogin(message: message)
+        case .mfaRequired:
+            return false
+        }
+    }
+
+    private func shouldTryControllerCompatibilityVariants(_ payload: WaterControllerResponse) -> Bool {
+        guard payload.retNo != 0 else { return false }
+        if payload.retNo == -12 { return true }
+        guard let message = payload.retDsp?.nilIfEmpty else { return true }
+        return Self.isAuthorizationFailure(message: message) || Self.isReservationRestricted(message: message)
+    }
+
+    private func shouldTryWebViewFallback(_ payload: WaterControllerResponse) -> Bool {
+        guard payload.retNo != 0 else { return false }
+        if payload.retNo == -12 { return true }
+        guard let message = payload.retDsp?.nilIfEmpty else { return true }
+        return Self.isAuthorizationFailure(message: message) || Self.isReservationRestricted(message: message)
     }
 
     private func reusableToken(allowStale: Bool) -> String? {
@@ -311,7 +463,7 @@ public final class WaterControlAPI: @unchecked Sendable {
     private func validate(retNo: Int, message: String?, operation: String) throws {
         guard retNo == 0 else {
             let msg = message?.nilIfEmpty ?? "\(operation)失败"
-            if Self.requiresLogin(message: msg) {
+            if retNo == -12 || Self.requiresLogin(message: msg) || Self.isAuthorizationFailure(message: msg) {
                 throw AuthError.expired("水控登录态已失效")
             }
             if Self.isReservationRestricted(message: msg) {
@@ -365,6 +517,13 @@ public final class WaterControlAPI: @unchecked Sendable {
             lower.contains("登录") ||
             lower.contains("token") ||
             lower.contains("unauthorized")
+    }
+
+    private static func isAuthorizationFailure(message: String) -> Bool {
+        message.contains("授权验证失败") ||
+            message.contains("授权") ||
+            message.contains("鉴权") ||
+            message.contains("验证失败")
     }
 
     private static func isReservationRestricted(message: String) -> Bool {

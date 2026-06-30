@@ -299,7 +299,87 @@ GET /waterapi/api/AccUseHzWatch?info=...&token=...
 
 详情页筛选只影响本地展示，不改变学校状态，也不提交任何写操作。空状态和错误态应提供“重新获取控水登录态 / 重试”，不能只展示“暂无数据”。
 
-## 8. STAR 卓越星
+## 8. 宿舍洗衣机
+
+洗衣机业务位于 `TongjiKit/Sources/TongjiKit/Laundry/`。首版只读展示洗衣房和机器状态，不提交预约、排队、支付、扫码、启动或停止洗衣请求。
+
+基础域名：
+
+```text
+https://wx2.cooleasy.net
+```
+
+### 8.1 鉴权与网页 token
+
+CoolEasy 洗衣机网页当前不依赖同济 IAM，但依赖 CoolEasy 自己的微信网页会话。抓包验证表明：裸请求入口页会返回 HTTP 500；只要带有效 `loginStatusId` Cookie，入口页即可返回 200 并生成新的 anti-forgery token。业务 POST 需要网页中的 anti-forgery token 与同站 Cookie：
+
+1. 请求洗衣房入口页：
+
+   ```text
+   GET /Home/lineUpNearbyEquipment?typeId=1&r=yyyyMMddHHmmssSSS
+   ```
+
+2. 从 HTML 中抽取隐藏 input：
+
+   ```html
+   name="__RequestVerificationToken"
+   ```
+
+3. 带同站 Cookie 提交洗衣房列表 POST。
+4. 展开某个洗衣房时，请求详情页：
+
+   ```text
+   GET /Home/NearbyEquipment?typeId=1&address=<Address>
+   ```
+
+5. 从详情页重新抽取 token，再提交该房间机器列表 POST。
+
+日志只允许输出接口路径、HTTP 状态、业务 `success/msg`、房间数量、机器数量、token 长度；不得输出 Cookie、anti-forgery token、完整请求体或用户敏感信息。
+
+App 单独维护 `wx2.cooleasy.net` 的 Cookie header，响应中的 `Set-Cookie` 会回写到 Keychain `laundry_cookies`。日志只输出 Cookie 名称，例如 `loginStatusId` / `ASP.NET_SessionId` / `__RequestVerificationToken`，不输出值。若入口页返回 500 且本地没有 `loginStatusId`，按“CoolEasy 会话未初始化”处理，而不是误报普通网络错误。
+
+### 8.2 接口
+
+洗衣房列表：
+
+```text
+POST /Home/ApiWashingRoomList
+Content-Type: application/x-www-form-urlencoded; charset=UTF-8
+
+__RequestVerificationToken=<page token>
+TypeId=1
+LonX=121.498886
+LatY=31.28323
+```
+
+首版默认使用四平路附近坐标，不请求系统定位权限。
+
+某洗衣房机器列表：
+
+```text
+POST /Home/ApiMachineListByAddress
+Content-Type: application/x-www-form-urlencoded; charset=UTF-8
+
+__RequestVerificationToken=<page token>
+TypeId=1
+Address=<服务端返回的原始 Address>
+status=all
+```
+
+`RoomId` 在当前样例中为 `null`，因此 App 使用服务端原始 `Address` 作为本地稳定 id；展示时才 trim 首尾空白，避免把相似宿舍误合并。
+
+### 8.3 状态映射与 UI
+
+机器状态按以下优先级展示：
+
+- `IsOnline == false`：离线
+- `RunningStatusDescription` 包含“空闲”或 `RunningStatus == 1`：空闲
+- `RunningStatusDescription` 包含“运行”或 `RunningStatus == 2`：运行中
+- 其他：未知
+
+首页卡片和详情页优先展示用户置顶的常用洗衣房。机器列表按洗衣房懒加载；未展开的洗衣房不批量请求机器状态，避免请求过多。
+
+## 9. STAR 卓越星
 
 STAR 活动列表优先使用公开接口。个人星值和需要身份的接口使用独立 Bearer Token，由 `StarAuthCoordinator` 维护。
 
@@ -309,7 +389,7 @@ STAR token 与一系统登录态解耦：
 - 一系统恢复成功后，可独立尝试 STAR 续期
 - 遇到验证码或 MFA 时不绕过，降级到用户交互
 
-## 9. 图书馆空间系统
+## 10. 图书馆空间系统
 
 图书馆座位与研习室数据来自：
 
@@ -319,7 +399,7 @@ https://space.tongji.edu.cn
 
 首版只读展示，不提交预约、取消预约或签到。
 
-### 9.1 鉴权
+### 10.1 鉴权
 
 图书馆系统使用独立 IAM 应用：
 
@@ -344,7 +424,7 @@ redirect_uri: https://space.tongji.edu.cn/api/Oauth3/login
 
 日志只允许输出 token 是否存在、长度和来源，不得输出 `cas`、JWT、Cookie、手机号、邮箱或完整学号。
 
-### 9.2 请求约定
+### 10.2 请求约定
 
 图书馆系统的 JWT 不放在 HTTP `Authorization` Header，而是放在 JSON 请求体里：
 
@@ -356,7 +436,7 @@ redirect_uri: https://space.tongji.edu.cn/api/Oauth3/login
 
 注意抓包中 `bearer` 与 token 之间没有空格。新增接口时必须保持这个格式，除非后续抓包证明学校改了协议。
 
-### 9.3 座位概览与座位图
+### 10.3 座位概览与座位图
 
 座位概览：
 
@@ -395,7 +475,7 @@ POST /api/Seat/seat
 
 `/api/Seat/seat` 返回座位坐标、尺寸、状态、标签等字段。UI 使用坐标绘制平面图，不展示几千条座位列表。
 
-### 9.4 本地标签
+### 10.4 本地标签
 
 学校标签来自：
 
@@ -412,7 +492,7 @@ POST /api/seat/label
 
 匹配依据为“图书馆名 + 楼层 / 区域名 + 座位号”。不确定区域不得误标。
 
-### 9.5 研习室
+### 10.5 研习室
 
 研习室概览同样使用：
 
