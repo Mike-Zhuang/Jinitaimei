@@ -187,12 +187,12 @@ private struct CalendarEvents: View {
 
             ForEach(exams, id: \.persistentModelID) { exam in
                 if let placement = placement(for: exam) {
-                    ExamCell(exam: exam, span: placement.span, dx: dx, dy: dy) {
+                    ExamCell(exam: exam, dx: dx, height: placement.height) {
                         onExamTap(exam)
                     }
                     .offset(
                         x: CGFloat(placement.dayOfWeek - 1) * dx,
-                        y: CGFloat(placement.startPeriod - 1) * dy
+                        y: placement.yOffset
                     )
                 }
             }
@@ -207,27 +207,39 @@ private struct CalendarEvents: View {
         let dayOfWeek = weekday == 1 ? 7 : weekday - 1
         let startMinute = calendar.component(.hour, from: start) * 60 + calendar.component(.minute, from: start)
         let endMinute = calendar.component(.hour, from: end) * 60 + calendar.component(.minute, from: end)
-        let startPeriod = nearestStartPeriod(for: startMinute)
-        let endPeriod = max(startPeriod, nearestEndPeriod(for: endMinute))
-        return ExamGridPlacement(dayOfWeek: dayOfWeek, startPeriod: startPeriod, span: max(1, endPeriod - startPeriod + 1))
+        let gridHeight = CGFloat(periodCount) * dy
+        let startY = min(max(yPosition(for: startMinute), 0), gridHeight)
+        let endY = min(max(yPosition(for: max(endMinute, startMinute + 1)), 0), gridHeight)
+        let availableHeight = gridHeight - startY
+        guard endY > startY, availableHeight > 0 else { return nil }
+
+        // 考试按真实时间映射到节次网格内部：课间/午休不额外占高度，
+        // 避免 13:30-15:30 这类考试被误画成第 5-7 节的整块。
+        let minReadableHeight = dy * 0.34
+        let height = min(max(endY - startY, minReadableHeight), availableHeight)
+        return ExamGridPlacement(dayOfWeek: dayOfWeek, yOffset: startY, height: height)
     }
 
-    private func nearestStartPeriod(for minute: Int) -> Int {
-        for slot in TongjiTimeSlot.list {
-            if let slotEnd = minutes(slot.end), minute <= slotEnd {
-                return slot.id
+    private func yPosition(for minute: Int) -> CGFloat {
+        for (index, slot) in TongjiTimeSlot.list.enumerated() {
+            guard let slotStart = minutes(slot.start),
+                  let slotEnd = minutes(slot.end),
+                  slotEnd > slotStart else {
+                continue
             }
-        }
-        return TongjiTimeSlot.list.last?.id ?? 1
-    }
 
-    private func nearestEndPeriod(for minute: Int) -> Int {
-        for slot in TongjiTimeSlot.list.reversed() {
-            if let slotStart = minutes(slot.start), minute >= slotStart {
-                return slot.id
+            if minute <= slotStart {
+                return CGFloat(index) * dy
+            }
+            if minute < slotEnd {
+                let progress = CGFloat(minute - slotStart) / CGFloat(slotEnd - slotStart)
+                return (CGFloat(index) + progress) * dy
+            }
+            if minute == slotEnd {
+                return CGFloat(index + 1) * dy
             }
         }
-        return TongjiTimeSlot.list.first?.id ?? 1
+        return CGFloat(periodCount) * dy
     }
 
     private func minutes(_ text: String) -> Int? {
@@ -239,8 +251,8 @@ private struct CalendarEvents: View {
 
 private struct ExamGridPlacement {
     let dayOfWeek: Int
-    let startPeriod: Int
-    let span: Int
+    let yOffset: CGFloat
+    let height: CGFloat
 }
 
 // MARK: - 单个课程块
@@ -296,9 +308,8 @@ private struct CourseCell: View {
 
 private struct ExamCell: View {
     let exam: ExamScheduleItem
-    let span: Int
     let dx: CGFloat
-    let dy: CGFloat
+    let height: CGFloat
     let onTap: () -> Void
 
     var body: some View {
@@ -317,7 +328,7 @@ private struct ExamCell: View {
             }
             .padding(.leading, 6)
             .padding(.trailing, 3)
-            .frame(width: dx, height: CGFloat(span) * dy, alignment: .topLeading)
+            .frame(width: dx, height: height, alignment: .topLeading)
             .background(Color.indigo.opacity(0.16))
             .overlay(
                 Rectangle()
